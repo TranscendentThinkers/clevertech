@@ -55,6 +55,43 @@ app_license = "mit"
 
 # Home Pages
 # ----------
+doc_events = {
+        "Quality Inspection": {
+            "validate":"clevertech.server_scripts.quality_inspection.validate",
+            "on_submit":"clevertech.server_scripts.quality_inspection.on_submit",
+            "before_insert":"clevertech.server_scripts.quality_inspection.before_validate",
+        },
+        "Item": {
+            "before_validate":"clevertech.server_scripts.item.before_validate"
+        },
+        "Purchase Receipt": {
+            "on_submit": "clevertech.server_scripts.purchase_receipt.on_submit",
+            "before_validate": "clevertech.server_scripts.purchase_receipt.before_validate"
+        },
+        "Purchase Order": {
+            "before_validate": "clevertech.server_scripts.purchase_order.before_validate",
+#            "validate":"clevertech.supply_chain.server_scripts.purchase_order.validate",
+#            "before_validate":"clevertech.supply_chain.server_scripts.payment_schedule.before_validate",
+        },
+        "Material Request": {
+            "before_validate": "clevertech.server_scripts.material_request.before_validate"
+        },
+#        "BOM": {
+#            "before_insert": "clevertech.design.server_scripts.bom.before_insert"
+#        },
+#        "Request for Quotation": {
+#            "validate":"clevertech.supply_chain.server_scripts.request_for_quotation.validate",
+#        },
+#        "Supplier Quotation": {
+#            "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
+#        },
+}
+doctype_js = {
+        "Material Request":"public/js/material_request.js",
+#        "Request for Quotation":"public/js/request_for_quotation.js",
+#        "Supplier Quotation":"public/js/supplier_quotation.js",
+}
+app_include_js = "/assets/clevertech/js/row_highlight.js"
 
 # application home page (will override Website Settings)
 # home_page = "login"

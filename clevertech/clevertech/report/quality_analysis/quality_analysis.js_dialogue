@@ -1,0 +1,142 @@
+frappe.query_reports["Quality Analysis"] = {
+
+    formatter: function (value, row, column, data, default_formatter) {
+        if (column.fieldname === "item_code" && data && value) {
+            value = `<a href="#" class="show-item-popup" data-item="${data.item_code}">
+                        ${value}
+                     </a>`;
+        }
+        return value;
+    },
+
+    after_datatable_render: function (datatable) {
+
+        const $wrapper = $(datatable.wrapper);
+
+        // Remove old handlers
+        $wrapper.off("click", ".show-item-popup");
+        $wrapper.off("click", ".dt-cell");
+
+        // ------------------------------------------------------
+        // ① Highlight row when clicking ITEM CODE link
+        // ------------------------------------------------------
+        $wrapper.on("click", ".show-item-popup", function (e) {
+            e.preventDefault();
+
+            const item_code = $(this).data("item");
+
+            // highlight row using item_code
+            highlight_row_by_item(datatable, item_code);
+
+            // open popup
+            show_item_popup(item_code);
+        });
+
+        // ------------------------------------------------------
+        // ② Highlight row when clicking ANY CELL
+        // ------------------------------------------------------
+        $wrapper.on("click", ".dt-cell", function (e) {
+            const rowIndex = $(this).closest(".dt-row").data("row-index");
+
+            if (rowIndex !== undefined) {
+                highlight_row_by_index(datatable, rowIndex);
+            }
+        });
+    }
+};
+
+
+
+// ⭐ Highlight using item_code lookup
+function highlight_row_by_item(datatable, item_code) {
+    const rowIndex = datatable.datamanager.data.findIndex(
+        r => r.item_code === item_code
+    );
+    if (rowIndex !== -1) {
+        highlight_row_by_index(datatable, rowIndex);
+    }
+}
+
+
+// ⭐ Highlight using rowIndex directly
+function highlight_row_by_index(datatable, rowIndex) {
+
+    const $wrapper = $(datatable.wrapper);
+
+    // Remove previous highlights
+    $wrapper.find(".dt-row--highlight").removeClass("dt-row--highlight");
+
+    // Try native API (works in newer versions)
+    if (datatable.rowmanager?.highlightRow) {
+        datatable.rowmanager.highlightRow(rowIndex, true);
+    }
+
+    // Fallback for versions lacking highlightRow()
+    const rowEl = $wrapper.find(`.dt-row[data-row-index="${rowIndex}"]`)[0];
+    if (rowEl) {
+        rowEl.classList.add("dt-row--highlight");
+    }
+}
+
+
+
+// ⭐ Styling (once)
+frappe.dom.set_style(`
+    .dt-row--highlight {
+        background-color: #fff4b8 !important;   /* soft yellow */
+        transition: background-color 0.2s ease;
+    }
+
+    /* Remove default cell border highlight */
+    .dt-cell--focus {
+        box-shadow: none !important;
+        border: none !important;
+    }
+`);
+
+
+
+// ⭐ POPUP (unchanged)
+function show_item_popup(item_code) {
+    frappe.call({
+        method: "frappe.client.get",
+        args: { doctype: "Item", name: item_code },
+        callback: function (r) {
+            if (!r.message) return;
+
+            const item = r.message;
+
+            const dialog = new frappe.ui.Dialog({
+                size: 'extra-large',
+                title: __("Item Details: " + item.name),
+                fields: [{ fieldname: "item_html", fieldtype: "HTML" }],
+                primary_action_label: __("Open Item"),
+                primary_action() {
+                    frappe.set_route("Form", "Item", item.name);
+                }
+            });
+
+            const html = `
+                <div style="padding: 10px;">
+                    <table class="table table-bordered table-sm">
+                        <tr><th style="width: 40%;">Item Name</th><td>${item.item_name}</td></tr>
+                        <tr><th>Item Group</th><td>${item.item_group}</td></tr>
+                        <tr><th>Stock UOM</th><td>${item.stock_uom}</td></tr>
+                        <tr><th>Description</th><td>${item.description || ""}</td></tr>
+                    </table>
+                    ${
+                        item.image
+                            ? `<div style="margin-top:10px;text-align:center;">
+                                   <img src="${item.image}" style="max-width:150px;max-height:150px;border:1px solid #ccc;border-radius:8px;">
+                               </div>`
+                            : ""
+                    }
+                </div>
+            `;
+
+            dialog.set_value("item_html", html);
+            dialog.show();
+        }
+    });
+}
+
