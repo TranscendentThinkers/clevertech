@@ -75,7 +75,7 @@ doc_events = {
         },
         "Material Request": {
             "before_validate": "clevertech.server_scripts.material_request.before_validate",
-            "validate":"clevertech.server_scripts.material_request.validate",
+#            "validate":"clevertech.server_scripts.material_request.validate",
         },
 #        "BOM": {
 #            "before_insert": "clevertech.design.server_scripts.bom.before_insert"

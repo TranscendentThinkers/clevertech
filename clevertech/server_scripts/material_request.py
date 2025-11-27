@@ -49,7 +49,7 @@ def check_item_stock(parent_doc, child_row):
 
 import frappe
 from frappe.utils import getdate
-
+from frappe import _
 def before_validate(doc, method):
     if doc.transaction_date and doc.schedule_date:
         td = getdate(doc.transaction_date)
