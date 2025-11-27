@@ -74,7 +74,8 @@ doc_events = {
 #            "before_validate":"clevertech.supply_chain.server_scripts.payment_schedule.before_validate",
         },
         "Material Request": {
-            "before_validate": "clevertech.server_scripts.material_request.before_validate"
+            "before_validate": "clevertech.server_scripts.material_request.before_validate",
+            "validate":"clevertech.server_scripts.material_request.validate",
         },
 #        "BOM": {
 #            "before_insert": "clevertech.design.server_scripts.bom.before_insert"
@@ -91,7 +92,7 @@ doctype_js = {
 #        "Request for Quotation":"public/js/request_for_quotation.js",
 #        "Supplier Quotation":"public/js/supplier_quotation.js",
 }
-app_include_js = "/assets/clevertech/js/row_highlight.js"
+#app_include_js = "/assets/clevertech/js/row_highlight.js"
 
 # application home page (will override Website Settings)
 # home_page = "login"

@@ -54,7 +54,7 @@ def on_submit(doc, method):
                 all_ok = False
                 break
 
-    pr.db_set("custom_quality_status", "Completed" if all_ok)
+    pr.db_set("custom_quality_status", "Completed" if all_ok else "Pending")
     frappe.db.commit()
 
 

@@ -57,3 +57,12 @@ def before_validate(doc, method):
         diff = (sd - td).days
         doc.custom_required_by_in_days = diff
 
+
+def validate(doc,method):
+    frappe.log_error("Validate called")
+    for d in doc.items:
+        if d.actual_qty is not None and d.qty > d.actual_qty:
+            frappe.throw(
+                _("Row #{0}: Request Qty {1} is greater than Available Qty {2}")
+                .format(d.idx, d.qty, d.actual_qty)
+            )
