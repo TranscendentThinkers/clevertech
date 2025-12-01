@@ -1,5 +1,6 @@
 {
  "add_total_row": 0,
+ "add_translate_data": 0,
  "columns": [],
  "creation": "2025-11-04 12:50:18.244121",
  "disabled": 0,
@@ -10,9 +11,9 @@
  "is_standard": "Yes",
  "letter_head": "Clevertech",
  "letterhead": null,
- "modified": "2025-11-04 12:50:18.244121",
+ "modified": "2025-12-01 15:16:04.078454",
  "modified_by": "Administrator",
- "module": "Stock",
+ "module": "Clevertech",
  "name": "Rack wise Stock",
  "owner": "Administrator",
  "prepared_report": 0,
