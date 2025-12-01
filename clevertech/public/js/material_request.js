@@ -1,7 +1,17 @@
 frappe.ui.form.on('Material Request', {
         refresh(frm) {
                 frm.events.make_custom_buttons(frm);
+		frm.events.toggle_warehouses(frm);
         },
+	material_request_type(frm) {
+        	frm.events.toggle_warehouses(frm);
+    	},
+	toggle_warehouses(frm) {
+        	const hide = frm.doc.material_request_type === "Purchase";
+
+        	frm.set_df_property("set_from_warehouse", "hidden", hide);
+        	frm.set_df_property("set_warehouse", "hidden", hide);
+    	},
 	make_custom_buttons: function (frm) {
         if (frm.doc.docstatus == 0) {
             frm.add_custom_button(

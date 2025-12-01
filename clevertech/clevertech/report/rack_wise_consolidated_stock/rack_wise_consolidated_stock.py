@@ -34,12 +34,14 @@ def get_data(filters):
     if not parent_wh:
         frappe.throw("Please select a parent Warehouse (Group).")
 
+    child_warehouses = get_relevant_warehouses(filters)
+
     # 1) Get child warehouses (direct children only)
-    child_warehouses = frappe.get_all(
-        "Warehouse",
-        filters={"parent_warehouse": parent_wh, "is_group": 0},
-        pluck="name"
-    )
+#    child_warehouses = frappe.get_all(
+#       "Warehouse",
+#       filters={"parent_warehouse": parent_wh, "is_group": 0},
+#       pluck="name"
+#   )
 
     # If none, and parent itself is leaf, include parent
     if not child_warehouses:
@@ -126,3 +128,22 @@ def get_data(filters):
 
     return rows
 
+
+def get_relevant_warehouses(filters):
+    """
+    Logic:
+    - No warehouse filter → return all non-group warehouses.
+    - If warehouse (group) selected → get all child warehouses (recursively if needed).
+    """
+    if not filters.get("warehouse"):
+        return frappe.get_all("Warehouse", filters={"is_group": 0}, pluck="name")
+
+    parent = filters.get("warehouse")
+    # Recursive fetch (using lft/rgt for efficiency)
+    parent_wh = frappe.db.get_value("Warehouse", parent, ["lft", "rgt"], as_dict=True)
+    if parent_wh:
+        return frappe.db.get_all(
+            "Warehouse",
+            filters={"lft": [">", parent_wh.lft], "rgt": ["<", parent_wh.rgt], "is_group": 0},
+            pluck="name"
+        )
