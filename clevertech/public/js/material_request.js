@@ -204,16 +204,45 @@ frappe.ui.form.on('Material Request', {
 	   frappe.validated = false;
 
         }
+	    frm.trigger("check_bom_qty");
+    },
+	check_bom_qty(frm) {
+        if (frm._extra_items_checked) return;
+
+        if (
+            frm.doc.material_request_type !== "Purchase" ||
+            !frm.doc.custom_project_
+        ) {
+            return;
+        }
+
+        frappe.validated = false; // HARD STOP
+
+        frappe.call({
+            method: "clevertech.server_scripts.material_request.check_over_requested_items",
+            args: { doc: frm.doc },
+            callback(r) {
+                if (!r.message || !r.message.length) {
+                    frm._extra_items_checked = true;
+                    frm.save();
+                    return;
+                }
+
+                show_extra_items_dialog(frm, r.message);
+            }
+        });
     },
 	custom_required_by_in_days(frm) {
-        if (frm.doc.custom_required_by_in_days && frm.doc.transaction_date) {
-            let new_date = frappe.datetime.add_days(
-                frm.doc.transaction_date,
-                frm.doc.custom_required_by_in_days
-            );
+		set_required_by_date(frm)
+        
+    },
+	transaction_date(frm){
+		set_required_by_date(frm)
 
-            frm.set_value('schedule_date', new_date);
-        }
+    },
+	onload(frm){
+		set_required_by_date(frm)
+
     }
 
 
@@ -247,4 +276,86 @@ function update_actual_qty(frm,cdt,cdn){
             }
         });
 
+}
+
+function set_required_by_date(frm){
+	if (frm.doc.custom_required_by_in_days && frm.doc.transaction_date) {
+            let new_date = frappe.datetime.add_days(
+                frm.doc.transaction_date,
+                frm.doc.custom_required_by_in_days
+            );
+
+            frm.set_value('schedule_date', new_date);
+        }
+
+}
+
+function show_extra_items_dialog(frm, items) {
+
+    let html = `
+        <p style="color:#b45309">
+            The following items were already requested earlier for this project.
+        </p>
+
+        <div style="margin-bottom:8px">
+            <button class="btn btn-xs btn-default" id="select_all">Select All</button>
+            <button class="btn btn-xs btn-default" id="unselect_all">Unselect All</button>
+        </div>
+    `;
+
+    items.forEach(d => {
+        html += `
+            <div style="margin:4px 0">
+                <input type="checkbox"
+                       class="extra-item"
+                       value="${d.item_code}">
+                <b>${d.item_code}</b>
+                <span style="color:#92400e">
+                    (Already ordered: ${d.already_requested})
+                </span>
+            </div>
+        `;
+    });
+
+    let dialog = new frappe.ui.Dialog({
+        title: "Previously Ordered Items",
+        fields: [{ fieldtype: "HTML", options: html }],
+        secondary_action_label: "Delete Selected Items"
+    });
+
+    // Select all
+    dialog.$body.on("click", "#select_all", () => {
+        dialog.$body.find(".extra-item").prop("checked", true);
+    });
+
+    // Unselect all
+    dialog.$body.on("click", "#unselect_all", () => {
+        dialog.$body.find(".extra-item").prop("checked", false);
+    });
+
+    // CONFIRM → KEEP ALL ITEMS
+    dialog.set_primary_action("Confirm", () => {
+    frm._extra_items_checked = true;
+    dialog.hide();
+});
+
+    //  DELETE SELECTED ITEMS
+    dialog.set_secondary_action(() => {
+        let selected = dialog.$body
+            .find(".extra-item:checked")
+            .map((_, el) => el.value)
+            .get();
+
+        // delete silently (no validation)
+        frm.doc.items = frm.doc.items.filter(
+            row => !selected.includes(row.item_code)
+        );
+
+        frm.refresh_field("items");
+        frm._extra_items_checked = true;
+        dialog.hide();
+        // user saves manually
+    });
+
+    dialog.show();
 }

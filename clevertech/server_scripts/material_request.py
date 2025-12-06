@@ -39,12 +39,6 @@ def check_item_stock(parent_doc, child_row):
 
     required_qty = float(row.get("qty") or 0)
 
-    # If insufficient, throw message
-#    if required_qty > total_available:
-#        frappe.throw(
-#            f"Insufficient stock for {item_code} in {from_wh}: Requested {required_qty}, Available {total_available}"
-#        )
-
     return {"available_qty": total_available}
 
 import frappe
@@ -79,11 +73,33 @@ def before_validate(doc, method):
                 row.warehouse = default_store
 
 
-def validate(doc,method):
-    frappe.log_error("Validate called")
-    for d in doc.items:
-        if d.actual_qty is not None and d.qty > d.actual_qty:
-            frappe.throw(
-                _("Row #{0}: Request Qty {1} is greater than Available Qty {2}")
-                .format(d.idx, d.qty, d.actual_qty)
-            )
+@frappe.whitelist()
+def check_over_requested_items(doc):
+    doc = frappe.parse_json(doc)
+
+    result = []
+
+    for row in doc.get("items", []):
+        if not row.get("item_code"):
+            continue
+
+        already_requested = frappe.db.sql("""
+            SELECT IFNULL(SUM(mri.qty), 0)
+            FROM `tabMaterial Request Item` mri
+            JOIN `tabMaterial Request` mr ON mr.name = mri.parent
+            WHERE
+                mr.docstatus = 1
+                AND mr.material_request_type = 'Purchase'
+                AND mr.custom_project_ = %s
+                AND mri.item_code = %s
+        """, (doc.get("custom_project_"), row["item_code"]))[0][0]
+
+        if already_requested > 0:
+            result.append({
+                "item_code": row["item_code"],
+                "already_requested": already_requested,
+                "current_qty": row["qty"]
+            })
+
+    return result
+
