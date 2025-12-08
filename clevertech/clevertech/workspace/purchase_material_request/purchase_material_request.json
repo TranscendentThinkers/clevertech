@@ -1,0 +1,37 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"aIn1qBU_YN\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Purchase Material Request</span>\",\"col\":12}},{\"id\":\"9Msh1VLM21\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Purchase Material Request\",\"col\":3}}]",
+ "creation": "2025-12-06 01:44:24.806027",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "assets",
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "Purchase Material Request",
+ "links": [],
+ "modified": "2025-12-07 11:22:21.852999",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Purchase Material Request",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 1.0,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Purchase Material Request",
+   "type": "URL",
+   "url": "/app/material-request/new?material_request_type=Purchase"
+  }
+ ],
+ "title": "Purchase Material Request"
+}

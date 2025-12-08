@@ -19,7 +19,7 @@ def execute(filters=None):
             {"label": "GRN Date", "fieldname": "grn_date", "fieldtype": "Date", "width": 150},
             {"label": "Supplier Code", "fieldname": "supplier_code", "fieldtype": "Link","options":"Supplier", "width": 150},
             {"label": "Supplier Name", "fieldname": "supplier_name", "fieldtype": "Data", "width": 150},
-            {"label": "Item Code", "fieldname": "item_code", "fieldtype": "Data", "width": 150},
+            {"label": "Item Code", "fieldname": "item_code", "fieldtype": "Link","options":"Item","width": 150},
             {"label": "Item Name", "fieldname": "item_name", "fieldtype": "Data", "width": 180},
             {"label": "Description", "fieldname": "description", "fieldtype": "Data", "width": 200},
             {"label": "Qty", "fieldname": "qty", "fieldtype": "Float", "width": 120},
