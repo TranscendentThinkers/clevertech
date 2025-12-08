@@ -1,0 +1,37 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"N1VOCtdPt7\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Material Transfer</span>\",\"col\":12}},{\"id\":\"wek2Jl64z-\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Material Transfer Request\",\"col\":3}}]",
+ "creation": "2025-12-06 01:38:25.622071",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "change",
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "Material Transfer",
+ "links": [],
+ "modified": "2025-12-07 11:22:09.944503",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Material Transfer",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 2.0,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Material Transfer Request",
+   "type": "URL",
+   "url": "/app/material-request/new?material_request_type=Material%20Transfer"
+  }
+ ],
+ "title": "Material Transfer"
+}
