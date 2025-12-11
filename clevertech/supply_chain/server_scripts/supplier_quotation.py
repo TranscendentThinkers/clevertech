@@ -47,11 +47,41 @@ def validate(doc, method):
         mr_qty = float(mr_map[key] or 0)
         rfq_qty = float(row.qty or 0)
 
-        if rfq_qty != mr_qty:
+        if rfq_qty > mr_qty:
             frappe.throw(
                 f"Quantity mismatch for item {row.item_code}. "
                 f"Request For Quotation quantity is {mr_qty} but Supplier Quotation quantity is {rfq_qty}."
             )
+
+    if not doc.project:
+        doc.custom_consumed_budget = 0
+        return
+
+    # Sum of submitted SQs for the same project (excluding current)
+    submitted_total = frappe.db.get_value(
+        "Supplier Quotation",
+        {
+            "project": doc.project,
+            "docstatus": 1,
+            "name": ["!=", doc.name]
+        },
+        "SUM(grand_total)"
+    ) or 0
+
+    consumed_budget = flt(submitted_total) + flt(doc.grand_total or 0)
+
+    doc.custom_consumed_budget = consumed_budget
+
+def before_submit(doc, method):
+    allocated_budget = flt(doc.custom_allocated_budget or 0)
+    consumed_budget = flt(doc.custom_consumed_budget or 0)
+
+    if consumed_budget > allocated_budget:
+        frappe.throw(
+            f"Budget exceeding.<br>"
+            f"Allocated: {allocated_budget}<br>"
+            f"Consumed: {consumed_budget}"
+        )
 
     # Check if RFQ is missing any MR items
 #    rfq_keys = {f"{row.request_for_quotation}_{row.item_code}" for row in doc.items}
@@ -63,4 +93,38 @@ def validate(doc, method):
 #        frappe.throw(
 #            f"The following Request For Quotation items are missing in the Supplier Quotation: {missing_list}"
 #        )
+
+
+
+from frappe.utils import flt
+
+import frappe
+from frappe.utils import flt
+
+@frappe.whitelist()
+def get_project_budget_data(project, current_sq=None, current_sq_total=0):
+    allocated_budget = 0.0
+    consumed_budget = 0.0
+
+    # 1. Allocated Budget
+    budgets = frappe.get_all(
+        "Budget",
+        filters={
+            "project": project,
+            "budget_against": "Project",
+            "docstatus": 1
+        },
+        pluck="name"
+    )
+
+    if budgets:
+        allocated_budget = frappe.db.sql("""
+            SELECT SUM(budget_amount)
+            FROM `tabBudget Account`
+            WHERE parent IN %s
+        """, (tuple(budgets),))[0][0] or 0.0
+
+    return {
+        "allocated_budget": flt(allocated_budget),
+    }
 

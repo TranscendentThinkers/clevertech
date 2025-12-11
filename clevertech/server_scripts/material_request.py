@@ -28,6 +28,7 @@ def check_item_stock(parent_doc, child_row):
         if child_whs:
             wh_list = child_whs
 
+
     # Fetch Bin entries
     bins = frappe.get_all(
         "Bin",
@@ -45,6 +46,7 @@ import frappe
 from frappe.utils import getdate
 from frappe import _
 def before_validate(doc, method):
+    set_actual_qty(doc)
     if doc.transaction_date and doc.schedule_date:
         td = getdate(doc.transaction_date)
         sd = getdate(doc.schedule_date)
@@ -102,4 +104,59 @@ def check_over_requested_items(doc):
             })
 
     return result
+
+
+def set_actual_qty(doc):
+    if doc.material_request_type != "Material Transfer":
+        return
+
+    from_wh = doc.set_from_warehouse
+    if not from_wh:
+        return
+
+    # Check if warehouse is group
+    is_group = frappe.db.get_value("Warehouse", from_wh, "is_group")
+    wh_list = [from_wh]
+
+    if is_group:
+        lft, rgt = frappe.db.get_value("Warehouse", from_wh, ["lft", "rgt"])
+        wh_list = frappe.get_all(
+            "Warehouse",
+            filters={"lft": (">", lft), "rgt": ("<", rgt)},
+            pluck="name"
+        )
+
+    for row in doc.items:
+        if not row.item_code or not row.qty:
+            continue
+
+        bins = frappe.get_all(
+            "Bin",
+            filters={
+                "warehouse": ["in", wh_list],
+                "item_code": row.item_code
+            },
+            fields=["actual_qty"]
+        )
+
+        total_available = sum(b.actual_qty or 0 for b in bins)
+
+        # optional: store value in row
+        row.actual_qty = total_available
+def validate(doc,method):
+    if doc.material_request_type != "Material Transfer":
+        return
+    frappe.log_error("Validations trigger")
+    over_requested = []
+    from_wh = doc.set_from_warehouse
+    for row in doc.items:
+        if not row.item_code or not row.qty:
+            continue
+        if row.qty > row.actual_qty:
+            over_requested.append(f"{row.item_code} (requested {row.qty}, available {row.actual_qty})")
+    if over_requested:
+        frappe.throw(
+                f"Cannot save Material Transfer from {from_wh}: insufficient stock for {', '.join(over_requested)}",
+                frappe.ValidationError
+        )
 
