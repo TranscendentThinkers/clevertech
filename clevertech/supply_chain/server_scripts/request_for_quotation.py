@@ -43,7 +43,7 @@ def validate(doc, method):
         mr_qty = float(mr_map[key] or 0)
         rfq_qty = float(row.qty or 0)
 
-        if rfq_qty != mr_qty:
+        if rfq_qty > mr_qty:
             frappe.throw(
                 f"Quantity mismatch for item {row.item_code}. "
                 f"Material Request quantity is {mr_qty} but RFQ quantity is {rfq_qty}."

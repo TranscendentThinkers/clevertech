@@ -1,0 +1,126 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:{grn_name}-{DD}-{#}",
+ "creation": "2025-12-10 11:02:29.727831",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_break_jog0",
+  "amended_from",
+  "posting_date",
+  "grn_name",
+  "column_break_ivrp",
+  "inspection_type",
+  "reference_type",
+  "status",
+  "inspected_by",
+  "grn_items_section",
+  "grn_items"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_break_jog0",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "GRN Quality Inspection",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date"
+  },
+  {
+   "fieldname": "grn_name",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "GRN Name",
+   "options": "Purchase Receipt",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_ivrp",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Incoming",
+   "fieldname": "inspection_type",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Inspection Type"
+  },
+  {
+   "default": "Purchase Receipt",
+   "fieldname": "reference_type",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Reference Type"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "\nAccepted\nRejected",
+   "reqd": 1
+  },
+  {
+   "fieldname": "inspected_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Inspected By",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "grn_items_section",
+   "fieldtype": "Section Break",
+   "label": "GRN Items"
+  },
+  {
+   "fieldname": "grn_items",
+   "fieldtype": "Table",
+   "label": "GRN Items",
+   "options": "GRN Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2025-12-10 14:14:01.953159",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "GRN Quality Inspection",
+ "naming_rule": "Expression",
+ "owner": "saket.vaidya@transcendent.co.in",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
