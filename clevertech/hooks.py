@@ -70,32 +70,32 @@ doc_events = {
         },
         "Purchase Order": {
             "before_validate": "clevertech.server_scripts.purchase_order.before_validate",
-            "validate":"clevertech.supply_chain.server_scripts.purchase_order.validate",
+#            "validate":"clevertech.supply_chain.server_scripts.purchase_order.validate",
         },
         "Material Request": {
             "before_validate": "clevertech.server_scripts.material_request.before_validate",
-            "validate":"clevertech.server_scripts.material_request.validate",
+            "validate":"clevertech.server_scripts.material_request_validate.validate",
         },
-        "BOM": {
-            "before_insert": "clevertech.design.server_scripts.bom.before_insert"
-        },
-        "Request for Quotation": {
-            "validate":"clevertech.supply_chain.server_scripts.request_for_quotation.validate",
-        },
-        "Supplier Quotation": {
-            "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
-            "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
-        },
+#        "BOM": {
+#            "before_insert": "clevertech.design.server_scripts.bom.before_insert"
+#        },
+#        "Request for Quotation": {
+#            "validate":"clevertech.supply_chain.server_scripts.request_for_quotation.validate",
+#        },
+#        "Supplier Quotation": {
+#            "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
+#            "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
+#        },
 }
 doctype_js = {
         "Material Request":"public/js/material_request.js",
-        "Request for Quotation":"public/js/request_for_quotation.js",
-        "Supplier Quotation":"public/js/supplier_quotation.js",
-        "Purchase Order":"public/js/purchase_order.js",
+#        "Request for Quotation":"public/js/request_for_quotation.js",
+#        "Supplier Quotation":"public/js/supplier_quotation.js",
+#        "Purchase Order":"public/js/purchase_order.js",
 }
-doctype_list_js = {
-        "Item":"public/js/item_list.js",
-}
+#doctype_list_js = {
+#        "Item":"public/js/item_list.js",
+#}
 
 
 
