@@ -3,7 +3,7 @@ import frappe
 def before_validate(doc, method):
     # Fetch settings once
     settings = frappe.get_cached_doc("Quality Warehouse Settings")
-    qc_accepted = settings.qc_accepted_warehouse
+    qc_accepted = settings.qc_accepted_warehouse or doc.set_warehouse
     default_store = settings.default_store_warehouse
 
     for row in doc.items:

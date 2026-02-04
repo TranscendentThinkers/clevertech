@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:{grn_name}-{DD}-{#}",
+ "autoname": "format:{BQI}-{YYYY}-{#####}",
  "creation": "2025-12-10 11:02:29.727831",
  "doctype": "DocType",
  "engine": "InnoDB",
@@ -9,14 +9,16 @@
   "section_break_jog0",
   "amended_from",
   "posting_date",
+  "type",
   "grn_name",
+  "po_no",
   "column_break_ivrp",
   "inspection_type",
   "reference_type",
   "status",
   "inspected_by",
   "grn_items_section",
-  "grn_items"
+  "grn_items_quality_reqd"
  ],
  "fields": [
   {
@@ -28,7 +30,7 @@
    "fieldtype": "Link",
    "label": "Amended From",
    "no_copy": 1,
-   "options": "GRN Quality Inspection",
+   "options": "Bulk Quality Inspection",
    "print_hide": 1,
    "read_only": 1,
    "search_index": 1
@@ -44,8 +46,7 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "GRN Name",
-   "options": "Purchase Receipt",
-   "reqd": 1
+   "options": "Purchase Receipt"
   },
   {
    "fieldname": "column_break_ivrp",
@@ -70,37 +71,48 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "\nAccepted\nRejected",
-   "reqd": 1
+   "options": "\nAccepted\nRejected"
   },
   {
    "fieldname": "inspected_by",
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Inspected By",
-   "options": "User",
-   "reqd": 1
+   "options": "User"
   },
   {
    "fieldname": "grn_items_section",
    "fieldtype": "Section Break",
-   "label": "GRN Items"
+   "label": "Items"
   },
   {
-   "fieldname": "grn_items",
+   "fieldname": "po_no",
+   "fieldtype": "Link",
+   "label": "PO No.",
+   "options": "Purchase Order"
+  },
+  {
+   "fieldname": "grn_items_quality_reqd",
    "fieldtype": "Table",
-   "label": "GRN Items",
+   "label": "GRN/PO Items (Quality Required)",
    "options": "GRN Item"
+  },
+  {
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "label": "Type",
+   "options": "\nGRN Based\nPurchase Order Based",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2025-12-10 14:14:01.953159",
+ "modified": "2026-01-13 15:44:19.774071",
  "modified_by": "Administrator",
  "module": "Clevertech",
- "name": "GRN Quality Inspection",
+ "name": "Bulk Quality Inspection",
  "naming_rule": "Expression",
  "owner": "saket.vaidya@transcendent.co.in",
  "permissions": [
@@ -116,11 +128,37 @@
    "share": 1,
    "submit": 1,
    "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Quality Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
   }
  ],
  "row_format": "Dynamic",
  "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
- "states": []
+ "states": [],
+ "track_changes": 1
 }

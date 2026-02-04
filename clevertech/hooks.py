@@ -65,33 +65,61 @@ doc_events = {
             "before_validate":"clevertech.server_scripts.item.before_validate"
         },
         "Purchase Receipt": {
-            "on_submit": "clevertech.server_scripts.purchase_receipt.on_submit",
-            "before_validate": "clevertech.server_scripts.purchase_receipt.before_validate"
+            "on_submit": [
+                "clevertech.server_scripts.purchase_receipt.on_submit",
+                "clevertech.project_component_master.procurement_hooks.on_pr_submit",
+            ],
+#            "before_validate": "clevertech.server_scripts.purchase_receipt.before_validate",
+            "before_submit":"clevertech.server_scripts.purchase_receipt.before_submit",
+            "on_cancel": "clevertech.project_component_master.procurement_hooks.on_pr_cancel",
         },
         "Purchase Order": {
-            "before_validate": "clevertech.server_scripts.purchase_order.before_validate",
-#            "validate":"clevertech.supply_chain.server_scripts.purchase_order.validate",
+#            "before_validate": "clevertech.server_scripts.purchase_order.before_validate",
+            "validate": [
+                "clevertech.supply_chain.server_scripts.purchase_order.validate",
+                "clevertech.project_component_master.purchase_order_validation.validate_purchase_order_qty",
+            ],
+            "on_submit": "clevertech.project_component_master.procurement_hooks.on_po_submit",
+            "on_cancel": "clevertech.project_component_master.procurement_hooks.on_po_cancel",
         },
         "Material Request": {
             "before_validate": "clevertech.server_scripts.material_request.before_validate",
-            "validate":"clevertech.server_scripts.material_request_validate.validate",
+            "validate": [
+                "clevertech.server_scripts.material_request_validate.validate",
+                "clevertech.project_component_master.material_request_validation.validate_material_request_qty",
+            ],
+            "on_submit": "clevertech.project_component_master.procurement_hooks.on_mr_submit",
+            "on_cancel": "clevertech.project_component_master.procurement_hooks.on_mr_cancel",
         },
-#        "BOM": {
-#            "before_insert": "clevertech.design.server_scripts.bom.before_insert"
-#        },
-#        "Request for Quotation": {
-#            "validate":"clevertech.supply_chain.server_scripts.request_for_quotation.validate",
-#        },
-#        "Supplier Quotation": {
-#            "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
-#            "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
-#        },
+        "BOM": {
+            "before_insert": "clevertech.design.server_scripts.bom.before_insert",
+            "validate": "clevertech.project_component_master.bom_hooks.on_bom_validate",
+            "on_submit": "clevertech.project_component_master.bom_hooks.on_bom_submit",
+            "on_cancel": "clevertech.project_component_master.bom_hooks.on_bom_cancel",
+            "on_update_after_submit": "clevertech.project_component_master.bom_hooks.on_bom_update"
+        },
+        "Request for Quotation": {
+           # "before_save": "clevertech.server_scripts.request_for_quotation.before_save",
+            "validate": [
+                "clevertech.supply_chain.server_scripts.request_for_quotation.validate",
+                "clevertech.project_component_master.rfq_validation.validate_rfq_qty",
+            ],
+            "on_submit": "clevertech.project_component_master.procurement_hooks.on_rfq_submit",
+            "on_cancel": "clevertech.project_component_master.procurement_hooks.on_rfq_cancel",
+        },
+        "Supplier Quotation": {
+            "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
+            "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
+        },
 }
 doctype_js = {
         "Material Request":"public/js/material_request.js",
-#        "Request for Quotation":"public/js/request_for_quotation.js",
-#        "Supplier Quotation":"public/js/supplier_quotation.js",
-#        "Purchase Order":"public/js/purchase_order.js",
+        "Request for Quotation":"public/js/request_for_quotation.js",
+        "Supplier Quotation":"public/js/supplier_quotation.js",
+        "Purchase Order":"public/js/purchase_order.js",
+        "Purchase Receipt":"public/js/purchase_receipt.js",
+        "Project":"public/js/project.js",
+        
 }
 #doctype_list_js = {
 #        "Item":"public/js/item_list.js",

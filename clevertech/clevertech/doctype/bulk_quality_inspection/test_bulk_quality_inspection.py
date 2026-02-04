@@ -5,5 +5,5 @@
 from frappe.tests.utils import FrappeTestCase
 
 
-class TestGRNQualityInspection(FrappeTestCase):
+class TestBulkQualityInspection(FrappeTestCase):
 	pass

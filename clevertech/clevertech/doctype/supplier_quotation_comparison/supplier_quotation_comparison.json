@@ -1,0 +1,221 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:SQC-{request_for_quotation}-{####}",
+ "creation": "2026-01-12 10:30:24.332080",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "request_for_quotation",
+  "created_by",
+  "column_break_anqr",
+  "date",
+  "section_break_ancw",
+  "project",
+  "column_break_ttpy",
+  "cost_center",
+  "section_break_bdka",
+  "fetch_report",
+  "comparison_report",
+  "comparison_table",
+  "section_break_vnpi",
+  "attached_files",
+  "section_break_prve",
+  "supplier_selection_table",
+  "section_break_wqir",
+  "grand_total",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "request_for_quotation",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Request for Quotation",
+   "options": "Request for Quotation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_bdka",
+   "fieldtype": "Section Break",
+   "label": "Report"
+  },
+  {
+   "fieldname": "comparison_report",
+   "fieldtype": "HTML",
+   "label": "Comparison Report"
+  },
+  {
+   "fieldname": "supplier_selection_table",
+   "fieldtype": "Table",
+   "label": "Supplier Selection Table",
+   "options": "Supplier Selection Item"
+  },
+  {
+   "fieldname": "section_break_prve",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "fetch_report",
+   "fieldtype": "Button",
+   "label": "Fetch Report"
+  },
+  {
+   "fieldname": "section_break_vnpi",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "attached_files",
+   "fieldtype": "Table",
+   "label": "Attached Files",
+   "options": "Supplier Quotation Comparison File"
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "label": "Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "created_by",
+   "fieldtype": "Link",
+   "label": "Created By",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_anqr",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_ancw",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  },
+  {
+   "fieldname": "column_break_ttpy",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_wqir",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "grand_total",
+   "fieldtype": "Currency",
+   "label": "Grand Total",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Supplier Quotation Comparison",
+   "print_hide": 1,
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "comparison_table",
+   "fieldtype": "Table",
+   "hidden": 1,
+   "label": "Comparison Table",
+   "options": "Comparison Table Item"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-02-04 13:03:56.157587",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Supplier Quotation Comparison",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SQC Creator",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SQC Approver L1",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SQC Approver L2",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SQC Approver L3",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "SQC Approver L4",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

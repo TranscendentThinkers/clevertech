@@ -1,0 +1,107 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-01-30 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "bom_name",
+  "version_number",
+  "structure_hash",
+  "column_break_1",
+  "activated_on",
+  "deactivated_on",
+  "is_current",
+  "column_break_2",
+  "change_remarks",
+  "section_break_procurement",
+  "procurement_snapshot"
+ ],
+ "fields": [
+  {
+   "fieldname": "bom_name",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "BOM",
+   "options": "BOM",
+   "reqd": 1
+  },
+  {
+   "fieldname": "version_number",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Version #",
+   "description": "Sequential version number (1, 2, 3...)"
+  },
+  {
+   "fieldname": "structure_hash",
+   "fieldtype": "Data",
+   "label": "Structure Hash",
+   "description": "Hash of BOM structure at this version"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "activated_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Activated On",
+   "description": "When this BOM version became active"
+  },
+  {
+   "fieldname": "deactivated_on",
+   "fieldtype": "Datetime",
+   "label": "Deactivated On",
+   "description": "When this BOM version was replaced"
+  },
+  {
+   "fieldname": "is_current",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Current",
+   "default": "0",
+   "description": "Is this the currently active BOM version?"
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "change_remarks",
+   "fieldtype": "Small Text",
+   "label": "Change Remarks",
+   "description": "Reason for version change (from BOM Upload or manual entry)"
+  },
+  {
+   "fieldname": "section_break_procurement",
+   "fieldtype": "Section Break",
+   "label": "Procurement Snapshot",
+   "collapsible": 1,
+   "description": "Snapshot of procurement status at time of version deactivation"
+  },
+  {
+   "fieldname": "procurement_snapshot",
+   "fieldtype": "JSON",
+   "label": "Procurement Data",
+   "description": "JSON snapshot of child items with their BOM qty, MR/RFQ/PO references and quantities at time of deactivation"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-30 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Component BOM Version History",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

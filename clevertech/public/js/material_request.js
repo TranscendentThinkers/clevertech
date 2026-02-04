@@ -176,6 +176,9 @@ frappe.ui.form.on('Material Request', {
                                 d.bom_no = values.bom;
                                 d.custom_bom_qty = item.qty;
                             });
+
+                            // Track which BOM was used for procurement
+                            frm.set_value('custom_procurement_bom', values.bom);
                         }
                         d.hide();
                         refresh_field("items");
@@ -192,19 +195,19 @@ frappe.ui.form.on('Material Request', {
 
         let items_exceeding = frm.doc.items.filter(i => i.bom_no && i.custom_bom_qty && i.qty > i.custom_bom_qty);
 
-        if (items_exceeding.length > 0) {
-            frappe.validated = false; // stop normal validation temporarily
+        // Show warning only once (avoid duplicate from recursive save in check_bom_qty)
+        if (items_exceeding.length > 0 && !frm._bom_qty_warning_shown) {
+            frm._bom_qty_warning_shown = true;
+            frappe.validated = false;
 
-            let msg = "Following items have Qty greater than BOM Qty:<br><br>";
+            let msg = "Following items have MR Qty greater than Budgeted Qty:<br><br>";
             items_exceeding.forEach(row => {
-                msg += `<b>${row.item_code}</b>: Qty = ${row.qty}, BOM Qty = ${row.custom_bom_qty}<br>`;
+                msg += `<b>${row.item_code}</b>: MR Qty = ${row.qty}, Budgeted Qty = ${row.custom_bom_qty}<br>`;
             });
 
-	   frappe.msgprint(msg);
-	   frappe.validated = false;
-
+            frappe.msgprint(msg);
         }
-	    frm.trigger("check_bom_qty");
+        frm.trigger("check_bom_qty");
     },
 	check_bom_qty(frm) {
         if (frm._extra_items_checked) return;
@@ -261,6 +264,11 @@ frappe.ui.form.on("Material Request Item", {
        refresh: function(frm, cdt, cdn) {
             update_actual_qty(frm,cdt,cdn)
     },
+
+    set_from_warehouse:function(frm, cdt, cdn) {
+            update_actual_qty(frm,cdt,cdn)
+    },
+
 });
 function update_actual_qty(frm,cdt,cdn){
 	frappe.call({
