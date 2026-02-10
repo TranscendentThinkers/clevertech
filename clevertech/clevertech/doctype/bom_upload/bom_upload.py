@@ -3,6 +3,8 @@ from frappe.model.document import Document
 from frappe.utils.file_manager import save_file
 import openpyxl
 import io
+import hashlib
+import json
 
 # Conditional import for image loader
 try:
@@ -74,6 +76,27 @@ def to_float(val, default=0):
     except Exception:
         return default
 
+def _calculate_tree_hash(children):
+    """
+    Calculate MD5 hash of BOM structure from tree node children.
+    Uses same logic as bom_hooks.calculate_bom_structure_hash for consistency.
+
+    Args:
+        children: List of child node dicts with item_code and qty
+
+    Returns:
+        str: MD5 hash of sorted (item_code, qty) tuples, or None if no children
+    """
+    if not children:
+        return None
+
+    structure = sorted(
+        [(child["item_code"], float(child.get("qty", 1))) for child in children],
+        key=lambda x: x[0],
+    )
+    structure_str = json.dumps(structure, sort_keys=True)
+    return hashlib.md5(structure_str.encode()).hexdigest()
+
 
 def normalize_uom(uom):
     if not uom:
@@ -90,7 +113,7 @@ def normalize_uom(uom):
         "NUMERI": "Nos",
         "PEZZI": "PIECES",
         "METRI": "Meter",
-        "MQ": "Sqm",  # Metro Quadro (Square Meter)
+        "MQ": "Square Meter",  # Metro Quadro (Square Meter)
         "PACKAGES": "Nos"
     }
 
@@ -104,9 +127,9 @@ def get_item_group_and_hsn(item_code):
     """Map item code prefix to item group, HSN code, and expense account using Item Denomination Map"""
     if not item_code:
         return "All Item Groups", None, None
-    
+
     code = str(item_code).upper()
-    
+
     # Check for multi-character prefixes first (longer matches first)
     prefixes_to_check = ["CIM", "CIG", "CIC", "CIE", "IM", "TS"]
     for prefix in prefixes_to_check:
@@ -119,7 +142,7 @@ def get_item_group_and_hsn(item_code):
             )
             if mapping:
                 return mapping.item_group, mapping.hsn_code, mapping.default_expense_account
-    
+
     # Check single character prefixes
     first_char = code[0] if code else None
     if first_char:
@@ -131,7 +154,7 @@ def get_item_group_and_hsn(item_code):
         )
         if mapping:
             return mapping.item_group, mapping.hsn_code, mapping.default_expense_account
-    
+
     return "All Item Groups", None, None
 
 
@@ -139,16 +162,16 @@ def normalize_material(material):
     """Map material values to standardized names using Material Mapping doctype"""
     if not material:
         return None
-    
+
     mat = str(material).strip()
-    
+
     # Try to get mapping from database
     mapped_material = frappe.db.get_value(
         "Material Mapping",
         {"materiale": mat},
         "material"
     )
-    
+
     # If found in database, return it; otherwise return original
     return mapped_material if mapped_material else mat
 
@@ -157,33 +180,31 @@ def get_type_of_material(description):
     """Extract first word from description and map to type of material using Type of Material doctype"""
     if not description:
         return None
-    
+
     first_word = str(description).strip().split()[0].upper()
-    
+
     # Try to get mapping from database
     type_of_mat = frappe.db.get_value(
         "Type of Material",
         {"item_description": first_word},
         "type_of_material"
     )
-    
+
     return type_of_mat
-
-
 def get_surface_treatment(treatment):
     """Map Italian surface treatment to English using Surface Treatment Translation doctype"""
     if not treatment:
         return None
-    
+
     treat = str(treatment).strip()
-    
+
     # Try to get translation from database
     translated = frappe.db.get_value(
         "Surface Treatment Translation",
         {"italian": treat},
         "english"
     )
-    
+
     # If found in database, return it; otherwise return original
     return translated if translated else treat
 
@@ -210,6 +231,7 @@ def parse_rows(ws):
             "extended_description": ws[f"U{r}"].value,  # DESCRIZIONE_ESTESA for item description
             "qty": to_float(ws[f"E{r}"].value, 1),
             "revision": ws[f"G{r}"].value,
+            "state": ws[f"J{r}"].value,  # State from column J
             "material": ws[f"AD{r}"].value,
             "part_number": ws[f"AE{r}"].value,
             "weight": to_float(ws[f"AF{r}"].value, 0),
@@ -382,11 +404,14 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
 def create_bom_recursive(node, project, ws, image_loader, root_level=None):
     """Create BOMs recursively, creating child BOMs first (bottom-up)"""
 
+    item_code = node["item_code"]
+    debug_info = [f"=== create_bom_recursive: {item_code} ==="]
+
     if root_level is None:
         root_level = node["level"]
 
     ensure_item_exists(
-        node["item_code"],
+        item_code,
         node["description"],
         node.get("extended_description"),
         node["uom"],
@@ -410,17 +435,45 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
     if not node["children"]:
         return False
 
-    # Check if BOM already exists
-    existing = frappe.db.exists("BOM", {
-        "item": node["item_code"],
-        "is_active": 1,
-        "is_default": 1
-    })
+    # Hash-based existence check (2026-02-05):
+    # - If no active default BOM exists → create new
+    # - If BOM exists with SAME hash → skip (unchanged)
+    # - If BOM exists with DIFFERENT hash → create new version (ERPNext auto-demotes old one)
+    existing_bom = frappe.db.get_value(
+        "BOM",
+        {
+            "item": item_code,
+            "is_active": 1,
+            "is_default": 1,
+            "docstatus": 1
+        },
+        ["name", "custom_bom_structure_hash"],
+        as_dict=True
+    )
 
-    if existing:
-        return False
+    new_hash = _calculate_tree_hash(node["children"])
+    debug_info.append(f"children_count: {len(node['children'])}")
+    debug_info.append(f"new_hash: {new_hash}")
 
-    # Create BOM for current node
+    if existing_bom:
+        debug_info.append(f"existing_bom: {existing_bom.name}")
+        debug_info.append(f"existing_hash: {existing_bom.custom_bom_structure_hash}")
+        debug_info.append(f"hash_match: {existing_bom.custom_bom_structure_hash == new_hash}")
+
+        if existing_bom.custom_bom_structure_hash == new_hash:
+            # Same structure, skip creation
+            debug_info.append("ACTION: SKIP (hash match)")
+            frappe.log_error(title=f"DEBUG: BOM Skip - {item_code}", message="\n".join(debug_info))
+            return False
+
+        debug_info.append("ACTION: CREATE NEW VERSION (hash mismatch)")
+    else:
+        debug_info.append("existing_bom: None")
+        debug_info.append("ACTION: CREATE NEW BOM")
+
+    frappe.log_error(title=f"DEBUG: BOM Create - {item_code}", message="\n".join(debug_info))
+
+    # Create BOM for current node (new or version change)
     bom = frappe.get_doc({
         "doctype": "BOM",
         "item": node["item_code"],
@@ -429,6 +482,10 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
         "is_active": 1,
         "is_default": 1
     })
+
+    # Add State field to BOM if present
+    if node.get("state"):
+        bom.custom_state = node["state"]
 
     # Add ONLY direct children (not grandchildren)
     for child in node["children"]:
@@ -447,7 +504,6 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
             child.get("manufacturer"),
             child.get("revision")
         )
-
         bom_item = {
             "item_code": child["item_code"],
             "qty": child["qty"],
@@ -476,5 +532,11 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
 
     bom.insert(ignore_permissions=True)
     bom.submit()
+
+    # Log success with BOM name
+    frappe.log_error(
+        title=f"DEBUG: BOM Created - {item_code}",
+        message=f"BOM: {bom.name} | Items: {len(bom.items)} | State: {node.get('state')} | Project: {project}"
+    )
 
     return True

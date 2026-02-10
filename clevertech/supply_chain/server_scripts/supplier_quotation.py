@@ -1,4 +1,5 @@
 import frappe
+from frappe.utils import flt
 
 def validate(doc, method):
 
@@ -94,13 +95,6 @@ def before_submit(doc, method):
 #            f"The following Request For Quotation items are missing in the Supplier Quotation: {missing_list}"
 #        )
 
-
-
-from frappe.utils import flt
-
-import frappe
-from frappe.utils import flt
-
 @frappe.whitelist()
 def get_project_budget_data(project, current_sq=None, current_sq_total=0):
     allocated_budget = 0.0
@@ -127,4 +121,5 @@ def get_project_budget_data(project, current_sq=None, current_sq_total=0):
     return {
         "allocated_budget": flt(allocated_budget),
     }
+
 

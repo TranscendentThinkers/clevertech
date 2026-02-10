@@ -1,5 +1,4 @@
 frappe.ui.form.on("Purchase Receipt", {
-
     custom_get_items_from_bulk_quality_inspection(frm) {
         if (!frm.doc.custom_bulk_quality_inspection_for_grn) {
             frappe.msgprint(__('Please select a document first'));
@@ -13,21 +12,21 @@ frappe.ui.form.on("Purchase Receipt", {
             callback: function (r) {
                 if (!r.message) return;
                 const qty_map = {};
-		const rejected_qty_map = {};
-		const warehouse_map = {};
-		const rejected_warehouse_map = {};
+                const rejected_qty_map = {};
+                const warehouse_map = {};
+                const rejected_warehouse_map = {};
                 r.message.forEach(row => {
                     qty_map[row.item_code] = row.qty;
-		    rejected_qty_map[row.item_code] = row.rejected_qty || 0;
-		    warehouse_map[row.item_code] = row.warehouse;
-            	    rejected_warehouse_map[row.item_code] = row.rejected_warehouse;
+                    rejected_qty_map[row.item_code] = row.rejected_qty || 0;
+                    warehouse_map[row.item_code] = row.warehouse;
+                    rejected_warehouse_map[row.item_code] = row.rejected_warehouse;
                 });
                 frm.doc.items.forEach(item => {
                     if (qty_map[item.item_code] !== undefined) {
                         item.qty = qty_map[item.item_code];
-			frappe.model.set_value(item.doctype, item.name, 'received_qty', qty_map[item.item_code]);
-		//	frappe.model.set_value(item.doctype, item.name, 'rejected_qty', rejected_qty_map[item.item_code]);
-			frappe.model.set_value(item.doctype, item.name, 'warehouse', warehouse_map[item.item_code]);
+                        frappe.model.set_value(item.doctype, item.name, 'received_qty', qty_map[item.item_code]);
+                //      frappe.model.set_value(item.doctype, item.name, 'rejected_qty', rejected_qty_map[item.item_code]);
+                        frappe.model.set_value(item.doctype, item.name, 'warehouse', warehouse_map[item.item_code]);
                         frappe.model.set_value(item.doctype, item.name, 'rejected_warehouse', rejected_warehouse_map[item.item_code]);
                     }
                 });
@@ -35,7 +34,7 @@ frappe.ui.form.on("Purchase Receipt", {
             }
         });
     },
-
+    
     custom_submit_bulk_quality_inspection(frm) {
         if (!frm.doc.custom_bulk_quality_inspection_for_grn) {
             frappe.msgprint(__('Please select a document first'));
@@ -45,7 +44,7 @@ frappe.ui.form.on("Purchase Receipt", {
             method: "clevertech.server_scripts.purchase_receipt.submit_bqi",
             args: {
                 bqi_doc: frm.doc.custom_bulk_quality_inspection_for_grn,
-		pr_name: frm.doc.name
+                pr_name: frm.doc.name
             },
             callback: function (r) {
                 if (r.message && r.message.success) {
@@ -53,11 +52,38 @@ frappe.ui.form.on("Purchase Receipt", {
                         message: __(r.message.message),
                         indicator: 'green'
                     });
+                    
+                    // Save the current Purchase Receipt document
+                    frm.save().then(() => {
+                        // Make the field read-only after save
+                        frm.set_df_property('custom_bulk_quality_inspection_for_grn', 'read_only', 1);
+                        frm.refresh_field('custom_bulk_quality_inspection_for_grn');
+                    });
                 }
             },
             error: function(r) {
                 frappe.msgprint(__('Failed to submit BQI document'));
             }
         });
+    },
+    
+    refresh(frm) {
+        // Check if BQI document is submitted and make field read-only
+        if (frm.doc.custom_bulk_quality_inspection_for_grn) {
+            frappe.call({
+                method: "frappe.client.get_value",
+                args: {
+                    doctype: "Bulk Quality Inspection",
+                    filters: { name: frm.doc.custom_bulk_quality_inspection_for_grn },
+                    fieldname: "docstatus"
+                },
+                callback: function(r) {
+                    if (r.message && r.message.docstatus === 1) {
+                        frm.set_df_property('custom_bulk_quality_inspection_for_grn', 'read_only', 1);
+                        frm.refresh_field('custom_bulk_quality_inspection_for_grn');
+                    }
+                }
+            });
+        }
     }
 });

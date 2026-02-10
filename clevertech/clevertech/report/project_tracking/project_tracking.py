@@ -11,6 +11,12 @@ def execute(filters=None):
     if not filters.get("project"):
         return [], []
 
+    # If showing stale BOM references, use different columns and data
+    if filters.get("show_stale_bom"):
+        columns = get_stale_bom_columns()
+        data = get_stale_bom_data(filters)
+        return columns, data
+
     columns = get_columns(filters)
     data = get_data(filters)
 
@@ -416,3 +422,105 @@ def get_delivery_status(po_qty, delivery_qty):
     if delivery_qty > 0:
         return "Partial"
     return "Pending"
+
+
+# ==================== Stale BOM References ====================
+
+def get_stale_bom_columns():
+    """Columns for Stale BOM References view"""
+    return [
+        {"label": _("Parent BOM"), "fieldname": "parent_bom", "fieldtype": "Link", "options": "BOM", "width": 180},
+        {"label": _("Parent Item"), "fieldname": "parent_item", "fieldtype": "Link", "options": "Item", "width": 150},
+        {"label": _("Child Item"), "fieldname": "child_item", "fieldtype": "Link", "options": "Item", "width": 150},
+        {"label": _("Child BOM (in Parent)"), "fieldname": "child_bom_in_parent", "fieldtype": "Link", "options": "BOM", "width": 180},
+        {"label": _("Current Default BOM"), "fieldname": "current_default_bom", "fieldtype": "Link", "options": "BOM", "width": 180},
+        {"label": _("Used by CM"), "fieldname": "used_by_cm", "fieldtype": "Data", "width": 180},
+        {"label": _("Procurement Impact"), "fieldname": "procurement_impact", "fieldtype": "Data", "width": 120},
+        {"label": _("Status"), "fieldname": "bom_status", "fieldtype": "Data", "width": 120},
+    ]
+
+
+def get_stale_bom_data(filters):
+    """
+    Find all parent BOMs in the project that have outdated child BOM references.
+
+    A "stale" reference occurs when:
+    - Parent BOM has a BOM Item with bom_no = BOM-X-001
+    - But the current default BOM for that child item is BOM-X-002
+
+    This happens after a child BOM version change - the parent still references
+    the old (now demoted) child BOM version.
+
+    Also shows which Component Masters reference the stale parent BOM as their
+    active_bom. If no CM references it, procurement is not affected.
+    """
+    project = filters.get("project")
+
+    # Get all active submitted BOMs for the project
+    # that have child items with their own BOMs (bom_no is set)
+    stale_refs = frappe.db.sql("""
+        SELECT
+            parent_bom.name AS parent_bom,
+            parent_bom.item AS parent_item,
+            bi.item_code AS child_item,
+            bi.bom_no AS child_bom_in_parent,
+            child_default.name AS current_default_bom
+        FROM `tabBOM` parent_bom
+        INNER JOIN `tabBOM Item` bi ON bi.parent = parent_bom.name
+        LEFT JOIN `tabBOM` child_default ON (
+            child_default.item = bi.item_code
+            AND child_default.is_active = 1
+            AND child_default.is_default = 1
+            AND child_default.docstatus = 1
+        )
+        WHERE parent_bom.project = %(project)s
+        AND parent_bom.docstatus = 1
+        AND parent_bom.is_active = 1
+        AND bi.bom_no IS NOT NULL
+        AND bi.bom_no != ''
+        AND (
+            child_default.name IS NULL
+            OR bi.bom_no != child_default.name
+        )
+        ORDER BY parent_bom.item, bi.item_code
+    """, {"project": project}, as_dict=True)
+
+    if not stale_refs:
+        return []
+
+    # Build lookup: parent_bom_name → list of CMs that reference it as active_bom
+    stale_bom_names = list(set(r.parent_bom for r in stale_refs))
+    cm_usage = {}
+    if stale_bom_names:
+        cm_rows = frappe.db.sql("""
+            SELECT name, item_code, active_bom
+            FROM `tabProject Component Master`
+            WHERE project = %(project)s
+            AND active_bom IN %(bom_names)s
+        """, {"project": project, "bom_names": stale_bom_names}, as_dict=True)
+        for cm in cm_rows:
+            cm_usage.setdefault(cm.active_bom, []).append(cm.name)
+
+    data = []
+    for row in stale_refs:
+        status = "⚠️ Outdated" if row.current_default_bom else "⚠️ No Default"
+        cms_using = cm_usage.get(row.parent_bom, [])
+        if cms_using:
+            used_by = ", ".join(cms_using)
+            impact = "⚠️ Active"
+        else:
+            used_by = "-"
+            impact = "No Impact"
+
+        data.append({
+            "parent_bom": row.parent_bom,
+            "parent_item": row.parent_item,
+            "child_item": row.child_item,
+            "child_bom_in_parent": row.child_bom_in_parent,
+            "current_default_bom": row.current_default_bom or "-",
+            "used_by_cm": used_by,
+            "procurement_impact": impact,
+            "bom_status": status,
+        })
+
+    return data

@@ -394,19 +394,24 @@
   {
    "fieldname": "machine_code",
    "fieldtype": "Data",
+   "in_filter": 1,
+   "in_global_search": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
    "label": "Machine Code"
   },
   {
+   "description": "Root assembly code (item starting with M) - for items without bom_usage",
    "fieldname": "m_code",
    "fieldtype": "Data",
-   "label": "M-Code",
-   "description": "Root assembly code (item starting with M) - for items without bom_usage"
+   "label": "M-Code"
   },
   {
+   "description": "Sub-assembly code (item starting with G) - for items without bom_usage or single-parent",
    "fieldname": "g_code",
    "fieldtype": "Data",
-   "label": "G-Code",
-   "description": "Sub-assembly code (item starting with G) - for items without bom_usage or single-parent"
+   "label": "G-Code"
   },
   {
    "fieldname": "cost_center",
@@ -418,7 +423,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-03 10:58:36.333522",
+ "modified": "2026-02-09 10:16:58.624796",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Project Component Master",

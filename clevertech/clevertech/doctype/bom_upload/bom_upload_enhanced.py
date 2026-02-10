@@ -181,6 +181,7 @@ def parse_rows_dynamic(ws):
             "treatment": ws[f"{col_map['treatment']}{r}"].value,
             "uom": normalize_uom(ws[f"{col_map['uom']}{r}"].value),
             "level": int(ws[f"{col_map['level']}{r}"].value or 0),  # CRITICAL!
+            "state": ws[f"J{r}"].value,  # Design state from column J (G-code release status)
             "children": []
         })
 
@@ -233,6 +234,33 @@ def create_boms_with_validation(docname):
 
     if not tree:
         frappe.throw(_("No components found in the Excel file."))
+
+    # Filter tree to remove non-released G-codes (STATE != "RELEASED")
+    filtered_tree, skipped_info = filter_tree_by_g_code_state(tree)
+
+    # Notify user if any G-codes were skipped
+    if skipped_info["count"] > 0:
+        skip_details = "<br>".join([
+            f"• <b>{item['item_code']}</b> ({item['description'][:50]}...) - STATE: {item['state']} - Skipped {item['subtree_count']} items"
+            for item in skipped_info["items"]
+        ])
+        frappe.msgprint(
+            _(
+                f"<b>Skipped {skipped_info['count']} non-released G-code(s)</b><br><br>"
+                f"Total items skipped (including children): <b>{skipped_info['total_items_skipped']}</b><br><br>"
+                f"{skip_details}<br><br>"
+                "<small><i class='fa fa-info-circle'></i> Only G-codes with STATE = 'RELEASED' are processed. "
+                "Non-released designs and their child components are excluded from upload.</small>"
+            ),
+            title=_("Non-Released G-Codes Skipped"),
+            indicator="orange"
+        )
+
+    # Use filtered tree for all subsequent operations
+    tree = filtered_tree
+
+    if not tree:
+        frappe.throw(_("No releasable components found in the Excel file after STATE filtering."))
 
     # Step 2: Create Items for ALL nodes (assemblies + leaf items)
     # Items must exist BEFORE Component Masters (item_code is a Link field to Item)
@@ -324,7 +352,7 @@ def create_boms_with_validation(docname):
             }
 
     # Step 6 & 7: Create BOMs and link back to Component Masters
-    result = create_boms_and_link_components(tree, doc.project, analysis, ws, image_loader)
+    result = create_boms_and_link_components(tree, doc.project, analysis, ws, image_loader, machine_code)
 
     # Build comprehensive summary
     result["summary"] = {
@@ -355,10 +383,26 @@ def create_boms_with_validation(docname):
         result["summary"]["boms"]["failed"]
     )
 
+    # Ensure status is set explicitly
+    result["status"] = "success"
+
     # Build user-friendly message
     result["message"] = _build_summary_message(result["summary"], result.get("errors", []))
 
-    frappe.log_error(title="BOM Upload Debug", message=str(result))
+    # Log upload history
+    doc.append("upload_history", {
+        "bom_file": doc.bom_file,
+        "machine_code": machine_code,
+        "uploaded_by": frappe.session.user,
+        "uploaded_on": frappe.utils.now_datetime(),
+        "status": "Success",
+        "items_created": result["summary"]["items"].get("created", 0),
+        "boms_created": result["summary"]["boms"].get("created", 0),
+        "cms_created": result["summary"]["component_masters"].get("created", 0),
+    })
+    doc.save(ignore_permissions=True)
+
+    frappe.log_error(title="BOM Upload Debug - Fresh Upload", message=str(result))
     frappe.db.commit()
     return result
 
@@ -468,6 +512,14 @@ def create_component_masters_for_all_items(tree, project, machine_code):
             level = node.get("level", 0)
             project_qty = node.get("qty", 0) if level == 1 else 0
 
+            # Map STATE to design_status (from Excel column J)
+            # If STATE exists, use it. Otherwise default to "Design Released"
+            state = node.get("state")
+            if state and str(state).strip():
+                design_status = str(state).strip().title()  # Capitalize properly (e.g., "RELEASED" → "Released")
+            else:
+                design_status = "Design Released"
+
             cm_data = {
                 "doctype": "Project Component Master",
                 "project": project,
@@ -475,7 +527,7 @@ def create_component_masters_for_all_items(tree, project, machine_code):
                 "machine_code": machine_code,  # Set machine code on all Component Masters
                 "bom_level": level,
                 "is_loose_item": 0,
-                "design_status": "Design Released",
+                "design_status": design_status,  # Mapped from Excel STATE column
                 "project_qty": project_qty,  # From Excel column E (root assembly only)
                 "created_from": "BOM Upload",
                 "released_for_procurement": released_for_procurement,
@@ -562,6 +614,82 @@ def _get_assembly_nodes(tree):
             assemblies.append(node)
             assemblies.extend(_get_assembly_nodes(node["children"]))
     return assemblies
+
+
+def filter_tree_by_g_code_state(tree):
+    """
+    Filter tree to remove G-code items with non-released STATE.
+
+    Business Rule (Approach 1 - G-level only):
+    - If item starts with "G" and STATE != "RELEASED" (or blank), skip entire subtree
+    - This prevents creation of Items, Component Masters, and BOMs for unreleased designs
+
+    Args:
+        tree: List of root nodes from build_tree()
+
+    Returns:
+        tuple: (filtered_tree, skipped_info)
+            filtered_tree: Tree with non-released G-codes removed
+            skipped_info: Dict with {"count": N, "items": [...]} for user notification
+    """
+    filtered_tree = []
+    skipped_items = []
+
+    def should_skip_node(node):
+        """Check if this G-code node should be skipped."""
+        item_code = str(node.get("item_code", "")).upper()
+
+        # Only check G-codes
+        if not item_code.startswith("G"):
+            return False
+
+        # Get STATE value
+        state = node.get("state")
+
+        # Skip if STATE is blank or not "RELEASED"
+        if not state or str(state).strip().upper() != "RELEASED":
+            return True
+
+        return False
+
+    def count_subtree_nodes(node):
+        """Count total nodes in a subtree."""
+        count = 1  # Count this node
+        if node.get("children"):
+            for child in node["children"]:
+                count += count_subtree_nodes(child)
+        return count
+
+    def filter_recursive(nodes):
+        """Recursively filter nodes."""
+        filtered = []
+        for node in nodes:
+            if should_skip_node(node):
+                # Skip this G-code and all its children
+                item_count = count_subtree_nodes(node)
+                skipped_items.append({
+                    "item_code": node.get("item_code"),
+                    "description": node.get("description"),
+                    "state": node.get("state") or "(blank)",
+                    "subtree_count": item_count
+                })
+            else:
+                # Keep this node, but filter its children recursively
+                filtered_node = node.copy()
+                if node.get("children"):
+                    filtered_node["children"] = filter_recursive(node["children"])
+                filtered.append(filtered_node)
+        return filtered
+
+    filtered_tree = filter_recursive(tree)
+
+    skipped_info = {
+        "count": len(skipped_items),
+        "total_items_skipped": sum(item["subtree_count"] for item in skipped_items),
+        "items": skipped_items
+    }
+
+    return filtered_tree, skipped_info
 
 
 # ==================== Step 4: Analyze Upload ====================
@@ -741,6 +869,7 @@ def _determine_component_status(item_code, node, project, machine_code):
                 "procurement_docs": blocking_info["procurement_docs"],
                 "existing_bom_not_linked": True,
                 "bom_diff": bom_diff,
+                "impacted_parents": _get_impacted_parent_boms(existing_bom),
             }
 
     # Compare BOM structures via hash - get hash from BOM itself (source of truth)
@@ -781,6 +910,7 @@ def _determine_component_status(item_code, node, project, machine_code):
             "can_proceed": blocking_info["can_proceed"],
             "procurement_docs": blocking_info["procurement_docs"],
             "bom_diff": bom_diff,
+            "impacted_parents": _get_impacted_parent_boms(component_master.active_bom),
         }
 
     return "unchanged", {
@@ -876,6 +1006,35 @@ def _get_procurement_documents(project, item_code):
         }
         for r in records
     ]
+
+
+# ==================== Impacted Parent BOMs (Where-Used) ====================
+
+def _get_impacted_parent_boms(old_bom_name):
+    """
+    Find all active submitted parent BOMs whose BOM Item rows reference
+    old_bom_name via bom_no. These parents still point to the old (demoted)
+    child BOM and will need engineer review for controlled upward propagation.
+
+    Args:
+        old_bom_name: Name of the demoted child BOM
+
+    Returns:
+        list: [{"parent_bom": str, "parent_item": str}, ...]
+    """
+    if not old_bom_name:
+        return []
+
+    rows = frappe.db.sql("""
+        SELECT DISTINCT b.name AS parent_bom, b.item AS parent_item
+        FROM `tabBOM Item` bi
+        INNER JOIN `tabBOM` b ON b.name = bi.parent
+        WHERE bi.bom_no = %(old_bom)s
+          AND b.docstatus = 1
+          AND b.is_active = 1
+    """, {"old_bom": old_bom_name}, as_dict=True)
+
+    return [{"parent_bom": r.parent_bom, "parent_item": r.parent_item} for r in rows]
 
 
 # ==================== Phase 4E: Procurement Blocking ====================
@@ -1129,7 +1288,11 @@ def _proceed_with_confirmed_changes(doc, confirmed_items):
     item_counters = {"created": 0, "existing": 0, "updated": 0, "failed": 0}
     ensure_items_for_all_nodes(tree, ws, image_loader, item_counters)
 
-    # Deactivate old BOMs for confirmed items
+    # Track old BOM names for confirmed items so we can report impacted parent BOMs.
+    # NOTE: We do NOT manually demote old BOMs here. When new BOM is submitted with
+    # is_default=1, ERPNext automatically demotes the old BOM (sets is_default=0).
+    # See erpnext/manufacturing/doctype/bom/bom.py - only one BOM can be default per item.
+    old_boms = {}  # item_code -> old_bom_name
     for item_code in confirmed_items:
         cm = frappe.db.get_value(
             "Project Component Master",
@@ -1142,17 +1305,16 @@ def _proceed_with_confirmed_changes(doc, confirmed_items):
             as_dict=True
         )
         if cm and cm.active_bom:
-            # Deactivate the old BOM (but keep active_bom reference for version change tracking)
-            old_bom = frappe.get_doc("BOM", cm.active_bom)
-            old_bom.is_active = 0
-            old_bom.is_default = 0
-            old_bom.flags.ignore_validate = True
-            old_bom.save(ignore_permissions=True)
-            # NOTE: Don't clear active_bom here!
-            # When new BOM is submitted, on_bom_submit will:
-            # 1. Detect old_bom via component_master.active_bom
-            # 2. Call _handle_bom_version_change() to log version history & remove old BOM usage
-            # 3. Update active_bom to the new BOM via update_component_master_bom_fields()
+            old_boms[item_code] = cm.active_bom
+        elif cm:
+            # CM exists but active_bom not linked yet — look up default BOM from system
+            existing_bom = frappe.db.get_value(
+                "BOM",
+                {"item": item_code, "is_active": 1, "is_default": 1, "docstatus": 1},
+                "name"
+            )
+            if existing_bom:
+                old_boms[item_code] = existing_bom
 
     # Build analysis with confirmed items treated as "new"
     all_assemblies = _get_assembly_nodes(tree)
@@ -1215,15 +1377,105 @@ def _proceed_with_confirmed_changes(doc, confirmed_items):
         "summary": {"can_create": len(can_create)},
     }
 
-    result = create_boms_and_link_components(tree, project, analysis, ws, image_loader)
+    # DEBUG: Log what we're about to create (consolidated log)
+    debug_lines = [
+        "=== BOM Upload Debug ===",
+        f"confirmed_items: {confirmed_items}",
+        f"can_create count: {len(can_create)}",
+        f"can_create items: {[n['item_code'] for n in can_create]}",
+        "",
+        "=== Tree Structure ===",
+    ]
+    for node in all_assemblies:
+        children_count = len(node.get("children", []))
+        in_can_create = node["item_code"] in confirmed_set or any(n["item_code"] == node["item_code"] for n in can_create)
+        debug_lines.append(f"  L{node.get('level')} | {node['item_code']} | children={children_count} | in_can_create={in_can_create}")
 
+    frappe.log_error(
+        title="DEBUG: BOM Upload Confirmation Flow",
+        message="\n".join(debug_lines)
+    )
+
+    result = create_boms_and_link_components(tree, project, analysis, ws, image_loader, machine_code)
+
+    # Build comprehensive summary (same format as create_boms_with_validation)
+    # so _show_upload_success() can display the stats tables
+    result["summary"] = {
+        "items": {
+            "created": item_counters["created"],
+            "existing": item_counters["existing"],
+            "updated": item_counters["updated"],
+            "failed": item_counters["failed"],
+            "total": sum(item_counters.values())
+        },
+        "boms": {
+            "created": result.pop("created", 0),
+            "existing": result.pop("skipped", 0),
+            "failed": result.pop("failed", 0),
+            "total": 0
+        },
+        "component_masters": {
+            "created": 0,
+            "existing": 0,
+            "updated": 0,
+            "failed": 0,
+            "total": 0
+        }
+    }
+    result["summary"]["boms"]["total"] = (
+        result["summary"]["boms"]["created"] +
+        result["summary"]["boms"]["existing"] +
+        result["summary"]["boms"]["failed"]
+    )
+
+    # Count CMs for this project (they were created in the initial call)
+    cm_count = frappe.db.count(
+        "Project Component Master",
+        {"project": project, "machine_code": machine_code}
+    )
+    result["summary"]["component_masters"]["existing"] = cm_count
+    result["summary"]["component_masters"]["total"] = cm_count
+
+    # Ensure status is set explicitly
+    result["status"] = "success"
+
+    result["message"] = _build_summary_message(result["summary"], result.get("errors", []))
+
+    # Collect impacted parent BOMs — parents still referencing old child BOMs
+    # via bom_no. Engineer needs to review these for controlled upward propagation.
+    impacted = []
+    for item_code, old_bom_name in old_boms.items():
+        for parent in _get_impacted_parent_boms(old_bom_name):
+            impacted.append({
+                "changed_item": item_code,
+                "old_bom": old_bom_name,
+                "parent_bom": parent["parent_bom"],
+                "parent_item": parent["parent_item"],
+            })
+    if impacted:
+        result["impacted_parent_boms"] = impacted
+
+    # Log upload history
+    doc.append("upload_history", {
+        "bom_file": doc.bom_file,
+        "machine_code": machine_code,
+        "uploaded_by": frappe.session.user,
+        "uploaded_on": frappe.utils.now_datetime(),
+        "status": "Success",
+        "items_created": result["summary"]["items"].get("created", 0),
+        "boms_created": result["summary"]["boms"].get("created", 0),
+        "cms_created": result["summary"]["component_masters"].get("created", 0),
+    })
+    doc.save(ignore_permissions=True)
+
+    frappe.log_error(title="BOM Upload Debug - Version Change", message=str(result))
     frappe.db.commit()
     return result
 
 
 # ==================== Step 6 & 7: Create BOMs and Link ====================
 
-def create_boms_and_link_components(tree, project, analysis, ws, image_loader):
+def create_boms_and_link_components(tree, project, analysis, ws, image_loader, machine_code=None):
     """
     Create BOMs for components that passed analysis, then link active_bom
     back to their Component Masters.
@@ -1234,6 +1486,7 @@ def create_boms_and_link_components(tree, project, analysis, ws, image_loader):
         analysis: Analysis results dict
         ws: Excel worksheet
         image_loader: SheetImageLoader instance (or None)
+        machine_code: Machine code to scope hierarchy population (required for multi-machine)
 
     Returns:
         dict: {"status": "success", "created": X, "skipped": X, "failed": X, "errors": []}
@@ -1266,7 +1519,13 @@ def create_boms_and_link_components(tree, project, analysis, ws, image_loader):
 
     # Populate hierarchy codes (parent_component, m_code, g_code) for CMs with missing data
     # This runs after BOMs are linked so we have the full structure
-    _populate_hierarchy_codes(project, only_missing=True)
+    # machine_code filter prevents cross-machine contamination when same item exists in multiple machines
+    _populate_hierarchy_codes(project, machine_code=machine_code, only_missing=True)
+
+    # Refresh bom_usage rows' m_code/g_code from now-correct parent CM headers.
+    # Must run AFTER _populate_hierarchy_codes because add_or_update_bom_usage() was
+    # called before CM headers had m_code/g_code set (ordering issue).
+    _refresh_bom_usage_hierarchy_codes(project, machine_code=machine_code)
 
     # Recalculate all Component Master quantities (synchronous, after commit)
     # This ensures total_qty_limit and other calculated fields are populated
@@ -1307,26 +1566,31 @@ def _create_bom_for_node(node, project, can_create_codes, ws, image_loader):
     errors = []
 
     item_code = node["item_code"]
+    has_children = bool(node.get("children"))
+    children_count = len(node.get("children", []))
+    in_can_create = item_code in can_create_codes
 
-    if not node.get("children"):
+    if not has_children:
         # Leaf node — no BOM needed
         return created, skipped, failed, errors
 
-    if item_code not in can_create_codes:
+    if not in_can_create:
         skipped += 1
-        return created, skipped, failed, errors
+        # DON'T return here - still need to recurse into children!
+    else:
 
-    try:
-        created_flag = create_bom_recursive(node, project, ws, image_loader)
-        if created_flag:
-            created += 1
-        else:
-            skipped += 1
-    except Exception as ex:
-        failed += 1
-        errors.append(f"{item_code}: {str(ex)}")
+        try:
+            created_flag = create_bom_recursive(node, project, ws, image_loader)
+            if created_flag:
+                created += 1
+            else:
+                skipped += 1
+        except Exception as ex:
+            failed += 1
+            errors.append(f"{item_code}: {str(ex)}")
 
-    # Recurse into children
+    # ALWAYS recurse into children (even if current node was skipped)
+    # This ensures we process confirmed child items even when parent is unchanged
     for child in node.get("children", []):
         if child.get("children"):
             c, s, f, e = _create_bom_for_node(child, project, can_create_codes, ws, image_loader)
@@ -1423,7 +1687,7 @@ def _link_boms_to_component_masters(project):
         populate_bom_usage_tables(project, linked_boms)
 
 
-def _populate_hierarchy_codes(project, only_missing=True):
+def _populate_hierarchy_codes(project, machine_code=None, only_missing=True):
     """
     Populate parent_component, m_code, g_code for Component Masters in a project.
 
@@ -1435,6 +1699,7 @@ def _populate_hierarchy_codes(project, only_missing=True):
 
     Args:
         project: Project name
+        machine_code: Machine code to filter by (prevents cross-machine contamination)
         only_missing: If True, only update CMs where fields are NULL (default)
                       If False, force refresh ALL CMs
 
@@ -1442,22 +1707,34 @@ def _populate_hierarchy_codes(project, only_missing=True):
         dict: {"updated": count, "skipped": count}
     """
     # Build filters based on only_missing flag
+    # Include machine_code filter to prevent cross-machine contamination
+    filters = {"project": project}
+    if machine_code:
+        filters["machine_code"] = machine_code
+
     if only_missing:
         # Get CMs where ANY of the hierarchy fields are missing
-        cms = frappe.db.sql("""
+        sql_conditions = ["project = %(project)s"]
+        sql_params = {"project": project}
+
+        if machine_code:
+            sql_conditions.append("machine_code = %(machine_code)s")
+            sql_params["machine_code"] = machine_code
+
+        cms = frappe.db.sql(f"""
             SELECT name, item_code, parent_component, m_code, g_code
             FROM `tabProject Component Master`
-            WHERE project = %(project)s
+            WHERE {" AND ".join(sql_conditions)}
             AND (
                 parent_component IS NULL OR parent_component = ''
                 OR m_code IS NULL OR m_code = ''
                 OR g_code IS NULL OR g_code = ''
             )
-        """, {"project": project}, as_dict=True)
+        """, sql_params, as_dict=True)
     else:
         cms = frappe.get_all(
             "Project Component Master",
-            filters={"project": project},
+            filters=filters,
             fields=["name", "item_code", "parent_component", "m_code", "g_code"]
         )
 
@@ -1468,9 +1745,10 @@ def _populate_hierarchy_codes(project, only_missing=True):
     skipped = 0
 
     # Build a lookup of item_code → CM name for parent lookups
+    # Filter by machine_code to prevent cross-machine contamination
     all_cms = frappe.get_all(
         "Project Component Master",
-        filters={"project": project},
+        filters=filters,
         fields=["name", "item_code"]
     )
     item_to_cm = {cm.item_code: cm.name for cm in all_cms}
@@ -1610,6 +1888,119 @@ def _find_parent_item_via_bom(item_code, project):
         return parent_item[0][0]
 
     return None
+
+
+def _refresh_bom_usage_hierarchy_codes(project, machine_code=None):
+    """
+    Refresh m_code and g_code on all bom_usage rows for a project.
+
+    This fixes the ordering issue where add_or_update_bom_usage() was called
+    BEFORE _populate_hierarchy_codes() set the CM header m_code/g_code.
+    At that point, parent CMs had NULL m_code, so _derive_codes_from_parent()
+    returned NULL for items under G-codes.
+
+    Now that CM headers are correct, re-derive bom_usage m_code/g_code from
+    the parent item code and parent CM's header fields.
+
+    Args:
+        project: Project name
+        machine_code: Machine code to filter by (prevents cross-machine contamination)
+
+    Returns:
+        dict: {"updated": count, "skipped": count}
+    """
+    # Get all bom_usage rows with missing m_code or g_code
+    rows = frappe.db.sql("""
+        SELECT
+            cbu.name AS row_name,
+            cbu.parent AS cm_name,
+            cbu.parent_bom,
+            cbu.m_code AS current_m_code,
+            cbu.g_code AS current_g_code,
+            pcm.item_code
+        FROM `tabComponent BOM Usage` cbu
+        INNER JOIN `tabProject Component Master` pcm ON pcm.name = cbu.parent
+        WHERE pcm.project = %(project)s
+        AND (cbu.m_code IS NULL OR cbu.m_code = ''
+             OR cbu.g_code IS NULL OR cbu.g_code = '')
+    """, {"project": project}, as_dict=True)
+
+    if not rows:
+        return {"updated": 0, "skipped": 0}
+
+    # Build lookup: item_code → CM data (m_code, g_code)
+    # Filter by machine_code to prevent cross-machine contamination
+    filters = {"project": project}
+    if machine_code:
+        filters["machine_code"] = machine_code
+
+    all_cms = frappe.get_all(
+        "Project Component Master",
+        filters=filters,
+        fields=["name", "item_code", "m_code", "g_code"]
+    )
+    item_to_cm = {cm.item_code: cm for cm in all_cms}
+
+    updated = 0
+    skipped = 0
+
+    for row in rows:
+        # Get the parent item from the parent BOM
+        parent_item = None
+        if row.parent_bom:
+            parent_item = frappe.db.get_value("BOM", row.parent_bom, "item")
+
+        if not parent_item:
+            skipped += 1
+            continue
+
+        # Derive m_code/g_code from parent item (same logic as _derive_codes_from_parent)
+        derived_m = None
+        derived_g = None
+
+        if parent_item.startswith("M"):
+            derived_m = parent_item
+            derived_g = None
+        elif parent_item.startswith("G"):
+            derived_g = parent_item
+            # Get m_code from parent CM's header (now populated by _populate_hierarchy_codes)
+            parent_cm_data = item_to_cm.get(parent_item)
+            if parent_cm_data:
+                derived_m = parent_cm_data.m_code
+        else:
+            # Parent is D-code or deeper — inherit from parent CM header
+            parent_cm_data = item_to_cm.get(parent_item)
+            if parent_cm_data:
+                derived_m = parent_cm_data.m_code
+                if parent_cm_data.item_code.startswith("G"):
+                    derived_g = parent_cm_data.item_code
+                else:
+                    derived_g = parent_cm_data.g_code
+
+        # Only update if we have something better than current values
+        needs_update = False
+        update_fields = {}
+
+        if not row.current_m_code and derived_m:
+            update_fields["m_code"] = derived_m
+            needs_update = True
+        if not row.current_g_code and derived_g:
+            update_fields["g_code"] = derived_g
+            needs_update = True
+
+        if needs_update:
+            frappe.db.set_value(
+                "Component BOM Usage", row.row_name,
+                update_fields, update_modified=False
+            )
+            updated += 1
+        else:
+            skipped += 1
+
+    if updated > 0:
+        frappe.db.commit()
+
+    return {"updated": updated, "skipped": skipped}
 
 
 # ==================== Hash Calculation ====================
@@ -1771,6 +2162,8 @@ def _serialize_analysis(analysis):
             "blocking_message": details.get("blocking_message"),
             "can_proceed": details.get("can_proceed"),
             "procurement_docs": details.get("procurement_docs", []),
+            "bom_diff": details.get("bom_diff", {}),
+            "impacted_parents": details.get("impacted_parents", []),
         }
 
     serialized = {

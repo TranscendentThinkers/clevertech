@@ -115,7 +115,8 @@ class BulkQualityInspection(Document):
             if row.accepted_qty + row.rejected_qty != row.qty_to_inspect:
                 frappe.throw(f"Accepted Qty + Rejected Qty should be equal to Qty to Inspect for item: {row.item_code}")
             if not row.type_of_issue:
-                frappe.throw(f"Type of Issue is a mandatory field for the item: {row.item_code}")
+                if row.rejected_qty>0:
+                    frappe.throw(f"Type of Issue is a mandatory field for the item: {row.item_code}")
 
         #for row in self.grn_items_quality_not_reqd:
         #    if row.accepted_qty + row.rejected_qty > row.qty_to_inspect:

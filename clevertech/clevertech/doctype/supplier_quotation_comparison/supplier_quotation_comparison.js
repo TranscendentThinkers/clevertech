@@ -12,12 +12,16 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
         if (frm.doc.comparison_table && frm.doc.comparison_table.length > 0) {
             render_comparison_from_table(frm);
         }
+
+        set_supplier_filter(frm);
     },
 
     request_for_quotation: function(frm) {
         if (frm.fields_dict.comparison_report) {
             frm.fields_dict.comparison_report.$wrapper.empty();
         }
+        
+        set_supplier_filter(frm);
     },
 
     fetch_report: function(frm) {
@@ -25,9 +29,12 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
             frappe.msgprint("Please select Request for Quotation first");
             return;
         }
-        if (frm.is_new() || frm.is_dirty()) {
+        if (frm.is_dirty()) {
             frm.save().then(() => {
                 generate_comparison_report(frm);
+            }).catch((error) => {
+                // Save failed due to validation - don't proceed
+                console.log("Validation failed, not generating report");
             });
         } else {
             generate_comparison_report(frm);
@@ -64,6 +71,35 @@ function validate_supplier_reason(frm) {
         });
         frappe.validated = false;
     }
+}
+
+function set_supplier_filter(frm) {
+    if (!frm.doc.request_for_quotation) {
+        return;
+    }
+
+    frappe.call({
+        method: 'frappe.client.get',
+        args: {
+            doctype: 'Request for Quotation',
+            name: frm.doc.request_for_quotation
+        },
+        callback: function(r) {
+            if (r.message && r.message.suppliers) {
+                let supplier_list = r.message.suppliers.map(s => s.supplier);
+                
+                frm.fields_dict.supplier_selection_table.grid.get_field('supplier').get_query = function(doc, cdt, cdn) {
+                    return {
+                        filters: {
+                            name: ['in', supplier_list]
+                        }
+                    };
+                };
+                
+                frm.fields_dict.supplier_selection_table.grid.refresh();
+            }
+        }
+    });
 }
 
 frappe.ui.form.on("Supplier Selection Item", {
@@ -301,8 +337,23 @@ function generate_comparison_report(frm) {
                         }
 
                         calculate_grand_total(frm);
+
+                        frm.save().then(() => {
+                            frappe.show_alert({
+                                message: __('Comparison report generated and saved successfully'),
+                                indicator: 'green'
+                            }, 3);
+                        });
                     }
                 }
+            });
+        },
+        error: function(r) {
+            $wrapper.html("<p>Error generating comparison report. Please try again.</p>");
+            frappe.msgprint({
+                title: __('Error'),
+                message: __('Failed to generate comparison report'),
+                indicator: 'red'
             });
         }
     });

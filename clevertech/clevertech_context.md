@@ -350,27 +350,30 @@ for cm_data in cms:
 | Should version change affect all projects? | No (only current) | ⚠️ Currently global |
 | Create duplicate BOMs? | No | ✅ Implemented |
 
-**Current Behavior (2026-02-04):**
+**Current Behavior (2026-02-04, updated 2026-02-04):**
 - BOMs are shared across projects (same BOM linked to multiple CMs)
-- When version change confirmed, old BOM is **deactivated globally**
-- New BOM created, linked to all projects using that item
+- When version change confirmed, old BOM is **demoted** (`is_default=0`) — NOT deactivated
+- Old BOM stays `is_active=1` — archived, still referenceable by parent BOMs and for traceability
+- New BOM created with `is_active=1, is_default=1`, linked to Component Master via `on_bom_submit`
 
-**Future Enhancement (Copy-on-Write):**
-- Don't deactivate old BOM when version changes
-- Create new BOM only for the project making the change
-- Other projects keep using old BOM (unaffected)
+**Controlled Upward Propagation (Industry Best Practice):**
+- Child BOM change does NOT automatically version parent BOMs
+- Parent BOMs still reference old child via `bom_no` until engineer explicitly adopts
+- System surfaces impacted parents (where-used) in confirmation dialog and post-creation result
+- Engineer reviews impact per ECO best practice, adopts when ready
+- This follows industry standard (SAP/Oracle/PLM): controlled revision, not auto-cascade
 
-**Resolution Status:** ✅ Partially Fixed (2026-02-04)
+**Why demotion instead of deactivation:**
+- Frappe blocks `is_active=0` on submitted BOMs that are referenced via `bom_no` in other submitted BOMs
+- `is_default=0` is sufficient: `create_bom_recursive` checks `is_active=1 AND is_default=1` to skip existing
+- Old BOM remains valid for parent references and version history audit trail
+- `total_qty_limit` on Component Master is the hard procurement gate — duplicate BOMs do not cause duplicate procurement
 
 **Fix Applied:**
 - Modified `_link_boms_to_component_masters()` in `bom_upload_enhanced.py`
 - Now processes ALL CMs with `has_bom=1` (removed "active_bom not set" filter)
 - Includes current `active_bom` in query to compare before updating
 - Only updates if `active_bom` differs from correct BOM
-
-**Known Limitation:**
-- Version change deactivates BOM globally (affects all projects)
-- Full per-project isolation not yet implemented
 
 ---
 
@@ -572,9 +575,11 @@ BOM-C-001 (submitted):
 
 **Key Insight:**
 - Parent BOMs **DO NOT** automatically use new child BOM versions
-- BOMs are **IMMUTABLE** after submission
-- Change propagates via **complete BOM Upload** (all affected BOMs created with new versions)
-- This is why PE2 exports the ENTIRE hierarchy (not just changed items)
+- BOMs are **IMMUTABLE** after submission — `bom_no` on BOM Item rows cannot be updated
+- Child change is **demoted** (not deactivated) — old BOM stays `is_active=1` for parent references
+- Parent adoption is **controlled** — engineer reviews impacted parents and adopts explicitly (ECO best practice)
+- System surfaces impacted parents via `_get_impacted_parent_boms()` (where-used query on `bom_no`)
+- PE2 exports the ENTIRE hierarchy so all levels are available for adoption when needed
 
 **Impact on Component Master:**
 
@@ -1802,10 +1807,12 @@ Already implemented — `bom_structure_hash` comparison during BOM Upload requir
 
 | Procurement Stage | Behavior | User Action |
 |-------------------|----------|-------------|
-| **No MR/RFQ/PO** | Confirm dialog with remarks | User confirms, keys in reason |
-| **MR exists** | BLOCK | User deactivates old BOM manually |
-| **RFQ exists** | BLOCK | User deactivates old BOM manually |
-| **PO exists** | BLOCK (stricter) | Requires Manager role to proceed |
+| **No MR/RFQ/PO** | Confirm dialog with remarks + impacted parents shown | User confirms, keys in reason |
+| **MR exists** | Confirmable (changed from BLOCK) | User confirms with remarks |
+| **RFQ exists** | Confirmable (changed from BLOCK) | User confirms with remarks |
+| **PO exists** | Requires Manager role to proceed | Manager confirms or blocks |
+
+**Note:** Old BOM is **demoted** (`is_default=0`), not deactivated. Stays `is_active=1` so parent BOMs referencing it via `bom_no` remain valid. Impacted parents are surfaced for engineer review (controlled upward propagation).
 
 ---
 
@@ -1838,18 +1845,18 @@ User uploads PE2 file with changed BOM structure
 System behavior:
 1. Detects hash change
 2. Checks procurement status → MR found
-3. Shows BLOCK dialog:
-   "Cannot change BOM for Item A. Child items have active procurement:
-    - X: MR-00123 (Submitted, qty: 50)
-
-   To proceed:
-   1. Go to BOM List
-   2. Deactivate BOM-A-001
-   3. Re-run BOM Upload"
-   [Open BOM List]
-4. Upload blocked for this component and its ancestors
-5. User manually deactivates old BOM
-6. User re-runs upload → proceeds (no procurement on old BOM now)
+3. Shows confirm dialog (confirmable, not hard block):
+   "BOM structure changed for Item A. Child X has active MR-00123 (qty: 50).
+    Impacted parents: [Motor-Assembly, ...]
+    Remarks: ________________"
+   [Cancel] [Proceed]
+4. If user confirms:
+   - Old BOM-A-001 demoted (is_default=0, is_active stays 1)
+   - New BOM-A-002 created (is_active=1, is_default=1)
+   - on_bom_submit handles version history + bom_usage cleanup
+   - Impacted parent BOMs returned for engineer review
+5. Parent BOMs still reference old BOM-A-001 via bom_no — valid until
+   engineer adopts new version (controlled upward propagation)
 ```
 
 **Scenario C — PO Exists (Stricter):**
@@ -2208,8 +2215,10 @@ Staged approach:
 4. Show dialog:
    - "Gearbox changed, blocks Motor-Assembly"
    - "Create 2 new components (Pump-Assembly, Valve-Block)?"
-5. User resolves Gearbox change (deactivates old BOM)
-6. Re-run upload → Creates all remaining components
+5. User confirms Gearbox change → old BOM demoted, new version created
+   - Impacted parents (Motor-Assembly) surfaced for review
+6. Upload proceeds → Creates remaining components
+7. Engineer reviews Motor-Assembly impact, adopts when ready
 ```
 
 **Scenario: Material Request with Limit Check (Day 35)**

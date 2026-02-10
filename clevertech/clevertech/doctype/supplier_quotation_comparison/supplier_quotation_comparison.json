@@ -10,6 +10,10 @@
   "created_by",
   "column_break_anqr",
   "date",
+  "section_break_gwew",
+  "required_by_in_days",
+  "column_break_dfqv",
+  "required_by_date",
   "section_break_ancw",
   "project",
   "column_break_ttpy",
@@ -133,13 +137,32 @@
    "hidden": 1,
    "label": "Comparison Table",
    "options": "Comparison Table Item"
+  },
+  {
+   "fieldname": "required_by_in_days",
+   "fieldtype": "Int",
+   "label": "Required By In Days",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_break_gwew",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "required_by_date",
+   "fieldtype": "Date",
+   "label": "Required By Date"
+  },
+  {
+   "fieldname": "column_break_dfqv",
+   "fieldtype": "Column Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-02-04 13:03:56.157587",
+ "modified": "2026-02-09 16:21:19.882337",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
