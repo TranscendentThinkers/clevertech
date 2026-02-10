@@ -111,6 +111,9 @@ doc_events = {
             "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
             "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
         },
+        "Sales Invoice": {
+            "before_validate": "clevertech.server_scripts.sales_invoice.before_validate",
+        },
 }
 doctype_js = {
         "Material Request":"public/js/material_request.js",

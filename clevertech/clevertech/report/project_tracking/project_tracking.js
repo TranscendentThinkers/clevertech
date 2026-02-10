@@ -27,6 +27,13 @@ frappe.query_reports["Project Tracking"] = {
             label: "Show PO & Delivery",
             fieldtype: "Check",
             default: 0
+        },
+        {
+            fieldname: "show_stale_bom",
+            label: "Show Stale BOM References",
+            fieldtype: "Check",
+            default: 0,
+            description: "Show parent BOMs with outdated child BOM references"
         }
     ],
 
@@ -71,6 +78,18 @@ frappe.query_reports["Project Tracking"] = {
             if (color) {
                 value = `<span style="font-weight:600;color:${color}">${value}</span>`;
             }
+        }
+
+        // Color coding for stale BOM status
+        if (column.fieldname === "bom_status") {
+            let color = data.bom_status === "⚠️ Outdated" ? "red" : "green";
+            value = `<span style="font-weight:600;color:${color}">${value}</span>`;
+        }
+
+        // Color coding for procurement impact
+        if (column.fieldname === "procurement_impact") {
+            let color = data.procurement_impact === "⚠️ Active" ? "red" : "green";
+            value = `<span style="font-weight:600;color:${color}">${value}</span>`;
         }
 
         // Blank consecutive duplicates for grouping columns

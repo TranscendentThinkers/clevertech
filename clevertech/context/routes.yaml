@@ -1,0 +1,75 @@
+# routes.yaml
+# Maps source file paths → context topic files.
+# When you change a file on the left, read the topic(s) on the right first.
+# Paths are relative to the clevertech app root (apps/clevertech/clevertech/).
+#
+# Generated 2026-02-04.  Update manually when new files are added.
+
+# ─── BOM Upload ──────────────────────────────────────────────────────────────
+clevertech/doctype/bom_upload/bom_upload.py:
+  - current_system_and_issues.md        # existing logic & column-mapping details
+  - architectural_decisions.md          # Decision 12 – import strategy
+
+clevertech/doctype/bom_upload/bom_upload_enhanced.py:
+  - architectural_decisions.md          # Decisions 3A, 6, 7, 12, 12A
+  - simplified_design_and_calculations.md  # phase-4B flows, make/buy merge
+  - implementation_status.md            # Phases 2, 4E-4I, bug fixes, hash deep-dive
+
+clevertech/doctype/bom_upload/bom_upload.js:
+  - implementation_status.md            # dialog functions (Phase 4E, 4G success UI)
+
+# ─── Project Component Master ────────────────────────────────────────────────
+clevertech/doctype/project_component_master/project_component_master.py:
+  - simplified_design_and_calculations.md  # calculate_bom_qty_required, cascade
+  - implementation_status.md            # Phases 4, 4B, 4C, calculation fixes
+
+clevertech/doctype/project_component_master/project_component_master.json:
+  - simplified_design_and_calculations.md  # field specs (project_qty, created_from, make_or_buy)
+  - implementation_status.md            # field additions per phase
+
+# ─── Hooks & validation ──────────────────────────────────────────────────────
+project_component_master/bom_hooks.py:
+  - architectural_decisions.md          # Decision 3A – version detection
+  - implementation_status.md            # Phases 1A, 4D, 4F, 4I, 4J, hash calc
+
+project_component_master/procurement_hooks.py:
+  - implementation_status.md            # Phase 3, 4J (bom_version on records)
+
+project_component_master/material_request_validation.py:
+  - architectural_decisions.md          # Decision 9 – hard block
+  - implementation_status.md            # Phase 3A, 4C (field name fix)
+
+project_component_master/purchase_order_validation.py:
+  - architectural_decisions.md          # Decision 9
+  - implementation_status.md            # Phase 3A, 4C
+
+project_component_master/rfq_validation.py:
+  - implementation_status.md            # Phase 4D
+
+project_component_master/bulk_generation.py:
+  - implementation_status.md            # Phase 2A, bug-fix 3 (consolidation)
+
+project_component_master/utils.py:
+  - implementation_status.md            # machine-code cascade, parent backfill
+
+# ─── Reporting ───────────────────────────────────────────────────────────────
+clevertech/report/project_tracking/project_tracking.py:
+  - implementation_status.md            # Phase 5 report spec + post-impl fixes
+
+clevertech/report/project_tracking/project_tracking.js:
+  - implementation_status.md            # image formatter, M/G-code display
+
+# ─── Server scripts ──────────────────────────────────────────────────────────
+design/server_scripts/bom.py:
+  - architectural_decisions.md          # duplicate-BOM before_insert check (must-keep gate)
+
+# ─── Frontend ────────────────────────────────────────────────────────────────
+public/js/project.js:
+  - implementation_status.md            # "Update Component Data" button (Phase 2A / machine-code)
+
+public/js/material_request.js:
+  - implementation_status.md            # Phase 4J – custom_procurement_bom population
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+hooks.py:
+  - implementation_status.md            # Phase 4A (hook registration), 4C, 4D, 4I

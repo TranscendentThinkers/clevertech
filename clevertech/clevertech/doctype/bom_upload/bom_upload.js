@@ -387,9 +387,32 @@ function _show_upload_success(result) {
             + '</table></div>';
     }
 
-    html += '</div>' // Close row
-        + errors_html
-        + '</div>';
+    html += '</div>'; // Close row
+
+    // Show impacted parent BOMs (only if version change occurred)
+    let impacted = result.impacted_parent_boms || [];
+    if (impacted.length > 0) {
+        html += '<hr><div class="alert alert-warning" style="margin-top:15px">'
+            + '<h6><i class="fa fa-exclamation-triangle"></i> Impacted Parent BOMs</h6>'
+            + '<p class="text-muted" style="font-size:12px">These parent BOMs still reference the old child BOM version. '
+            + 'Review if parent BOM update is needed.</p>'
+            + '<table class="table table-sm table-bordered">'
+            + '<thead><tr><th>Changed Item</th><th>Old BOM</th><th>Parent Item</th><th>Parent BOM</th></tr></thead>'
+            + '<tbody>';
+
+        impacted.forEach(function(row) {
+            html += '<tr>'
+                + '<td>' + row.changed_item + '</td>'
+                + '<td><a href="/app/bom/' + row.old_bom + '">' + row.old_bom + '</a></td>'
+                + '<td>' + row.parent_item + '</td>'
+                + '<td><a href="/app/bom/' + row.parent_bom + '">' + row.parent_bom + '</a></td>'
+                + '</tr>';
+        });
+
+        html += '</tbody></table></div>';
+    }
+
+    html += errors_html + '</div>';
 
     frappe.msgprint({
         title: __('Success'),

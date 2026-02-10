@@ -6,13 +6,16 @@ from frappe.utils import today, add_days
 class SupplierQuotationComparison(Document):
     def validate(self):
         self.validate_request_for_quotations()
-        # Populate on first save (when document is new)
-        if self.is_new() and self.request_for_quotation:
+        self.calculate_required_by_dates()
+
+        # Only populate items table on initial creation or when RFQ changes
+        # Skip if supplier_selection_table already has data (workflow transition)
+        if self.is_new() and self.request_for_quotation and not self.supplier_selection_table:
             self.populate_items_table()
             self.fetch_file_references()
             self.fetch_rfq_fields()
-        # OR populate when RFQ field changes
-        elif self.has_value_changed("request_for_quotation"):
+        elif self.has_value_changed("request_for_quotation") and self.request_for_quotation:
+            # Only repopulate if RFQ actually changed (not on workflow transitions)
             self.populate_items_table()
             self.fetch_file_references()
             self.fetch_rfq_fields()
@@ -45,6 +48,15 @@ class SupplierQuotationComparison(Document):
         )
         if existing_count > 0:
             frappe.throw(_("A Supplier Quotation Comparison already exists for this Request for Quotation."))
+
+    def calculate_required_by_dates(self):
+        """Calculate required_by_date from required_by_in_days at document level"""
+        # Get required_by_in_days from document level
+        required_by_in_days = self.get("required_by_in_days")
+        
+        if required_by_in_days and required_by_in_days > 0:
+            # Calculate and set required_by_date at document level
+            self.required_by_date = add_days(today(), required_by_in_days)
 
     def auto_submit_supplier_quotations(self):
         """Submit all supplier quotations in the selection table that are in draft status"""
@@ -151,6 +163,7 @@ class SupplierQuotationComparison(Document):
             if row.purchase_order:
                 continue
 
+
             sq_name = row.supplier_quotation
 
             if sq_name not in supplier_quotation_map:
@@ -160,7 +173,8 @@ class SupplierQuotationComparison(Document):
                 "item_code": row.item_code,
                 "qty": row.qty or 0,
                 "rate": row.rate or 0,
-                "required_by": row.get("required_by")
+                "payment_terms_template": row.get("payment_terms_template"),
+                "delivery_term": row.get("delivery_term")
             })
 
         if not supplier_quotation_map:
@@ -173,7 +187,7 @@ class SupplierQuotationComparison(Document):
         created_pos = []
 
         for sq_name, items in supplier_quotation_map.items():
-            po = create_po_from_supplier_quotation(sq_name, items, self, project, cost_center)
+            po = create_po_from_supplier_quotation(sq_name, items, self, project, cost_center, self.required_by_date)
             if po:
                 created_pos.append(po.name)
                 # Update selection table with PO reference
@@ -311,7 +325,7 @@ def get_supplier_quotation(rfq, supplier, item_code=None):
                             if item.item_code == item_code:
                                 # Calculate total tax for this item
                                 total_tax = calculate_item_tax(item)
-                                
+
                                 return {
                                     "name": sq_name,
                                     "rate": item.rate,
@@ -353,22 +367,22 @@ def calculate_item_tax(item):
     Supports: igst_amount, cgst_amount, sgst_amount, cess_amount, cess_non_advol_amount
     """
     total_tax = 0
-    
+
     # List of tax field names to check
     tax_fields = [
         'igst_amount',
-        'cgst_amount', 
+        'cgst_amount',
         'sgst_amount',
         'cess_amount',
         'cess_non_advol_amount'
     ]
-    
+
     for field in tax_fields:
         if hasattr(item, field):
             field_value = getattr(item, field)
             if field_value:
                 total_tax += field_value
-    
+
     return total_tax
 
 @frappe.whitelist()
@@ -439,7 +453,7 @@ def get_comparison_report_data(docname):
             if item.item_code in items_data:
                 # Calculate total tax for this item
                 total_tax = calculate_item_tax(item)
-                
+
                 items_data[item.item_code][supplier] = {
                     "rate": item.rate,
                     "qty": item.qty,
@@ -499,7 +513,6 @@ def get_comparison_report_data(docname):
 
     # Use all suppliers from RFQ (sorted)
     suppliers = sorted(all_rfq_suppliers)
-
     for item_code, item_info in items_data.items():
         # Create a row for each item
         row_data = {
@@ -695,7 +708,6 @@ def create_purchase_orders(doc_name):
                 indicator="orange",
                 title=_("Some Items Already Have POs")
             )
-
         supplier_quotation_map = {}
 
         for row in doc.supplier_selection_table:
@@ -715,7 +727,8 @@ def create_purchase_orders(doc_name):
                 "item_code": row.item_code,
                 "qty": row.qty or 0,
                 "rate": row.rate or 0,
-                "required_by": row.get("required_by")  # Add required_by date
+                "payment_terms_template": row.get("payment_terms_template"),
+                "delivery_term": row.get("delivery_term")
             })
 
         if not supplier_quotation_map:
@@ -724,7 +737,7 @@ def create_purchase_orders(doc_name):
         created_pos = []
 
         for sq_name, items in supplier_quotation_map.items():
-            po = create_po_from_supplier_quotation(sq_name, items, doc, project, cost_center)
+            po = create_po_from_supplier_quotation(sq_name, items, doc, project, cost_center, doc.required_by_date)
             if po:
                 created_pos.append(po.name)
                 # Update selection table with PO reference
@@ -751,7 +764,7 @@ def add_po_reference(comparison_doc, po, selected_item_codes):
             row.purchase_order = po.name
 
 
-def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, project, cost_center):
+def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, project, cost_center, required_by_date):
     try:
         # Use ERPNext's standard function - requires submitted Supplier Quotation
         from erpnext.buying.doctype.supplier_quotation.supplier_quotation import make_purchase_order
@@ -776,6 +789,22 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
         # Create a map for quick lookup of selected items
         selected_items_map = {item["item_code"]: item for item in selected_items}
 
+        # Extract payment_terms_template and delivery_term from first item (assumes all items in same PO have same values)
+        # You may want to adjust this logic based on your business rules
+        first_item = selected_items[0] if selected_items else {}
+        payment_terms_template = first_item.get("payment_terms_template")
+        delivery_term = first_item.get("delivery_term")
+
+        # Set payment_terms_template at PO header level if provided
+        if payment_terms_template:
+            po.payment_terms_template = payment_terms_template
+            # Trigger the template to populate payment schedule
+            po.run_method("set_payment_schedule")
+
+        # Set delivery_term at PO header level if provided
+        if delivery_term and hasattr(po, 'custom_delivery_term'):
+            po.custom_delivery_term = delivery_term
+
         # Filter items - keep only selected ones and update their qty/rate/required_by
         items_to_keep = []
         for po_item in po.items:
@@ -785,9 +814,9 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
                 po_item.qty = selected_item["qty"]
                 po_item.rate = selected_item["rate"]
 
-                # Set required_by date if provided (schedule_date in PO Item)
-                if selected_item.get("required_by"):
-                    po_item.schedule_date = selected_item["required_by"]
+                # Use the required_by_date from document level
+                if required_by_date:
+                    po_item.schedule_date = required_by_date
 
                 # Set project/cost center on item level
                 if hasattr(po_item, 'custom_project'):
@@ -812,6 +841,7 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
         po.docstatus = 0
         po.insert(ignore_permissions=False)
         po.submit()
+
 
         frappe.msgprint(
             _("Purchase Order {0} created in Draft for supplier {1}").format(
