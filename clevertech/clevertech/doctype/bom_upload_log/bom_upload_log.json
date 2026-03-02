@@ -1,0 +1,94 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-02-09 10:34:47.377612",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "bom_file",
+  "machine_code",
+  "uploaded_by",
+  "uploaded_on",
+  "status",
+  "column_break_1",
+  "items_created",
+  "boms_created",
+  "cms_created"
+ ],
+ "fields": [
+  {
+   "fieldname": "bom_file",
+   "fieldtype": "Attach",
+   "in_list_view": 1,
+   "label": "BOM File",
+   "read_only": 1
+  },
+  {
+   "fieldname": "machine_code",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Machine Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "uploaded_by",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Uploaded By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "uploaded_on",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Uploaded On",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "items_created",
+   "fieldtype": "Int",
+   "label": "Items Created",
+   "read_only": 1
+  },
+  {
+   "fieldname": "boms_created",
+   "fieldtype": "Int",
+   "label": "BOMs Created",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cms_created",
+   "fieldtype": "Int",
+   "label": "CMs Created",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-02-09 10:35:11.805220",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "BOM Upload Log",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

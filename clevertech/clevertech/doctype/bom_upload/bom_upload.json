@@ -1,0 +1,101 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:project",
+ "creation": "2026-01-21 14:24:39.255363",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "project",
+  "column_break_gboh",
+  "machine_code",
+  "section_break_tgxf",
+  "bom_file",
+  "column_break_prdz",
+  "create_boms",
+  "create_boms_with_validation",
+  "upload_history_section",
+  "upload_history"
+ ],
+ "fields": [
+  {
+   "fieldname": "create_boms",
+   "fieldtype": "Button",
+   "label": "Create BOMs"
+  },
+  {
+   "fieldname": "create_boms_with_validation",
+   "fieldtype": "Button",
+   "label": "Create BOMs with Validation"
+  },
+  {
+   "fieldname": "bom_file",
+   "fieldtype": "Attach",
+   "label": "BOM File"
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "label": "Project",
+   "options": "Project",
+   "unique": 1
+  },
+  {
+   "fieldname": "section_break_tgxf",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "column_break_prdz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "upload_history_section",
+   "fieldtype": "Section Break",
+   "label": "Upload History"
+  },
+  {
+   "fieldname": "upload_history",
+   "fieldtype": "Table",
+   "label": "Upload History",
+   "options": "BOM Upload Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_gboh",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "machine_code",
+   "fieldtype": "Data",
+   "label": "Machine Code"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-02-09 11:00:59.208680",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "BOM Upload",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

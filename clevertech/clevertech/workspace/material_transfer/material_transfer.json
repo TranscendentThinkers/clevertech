@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"N1VOCtdPt7\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Material Transfer</span>\",\"col\":12}},{\"id\":\"wek2Jl64z-\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Material Transfer Request\",\"col\":3}}]",
+ "content": "[{\"id\":\"N1VOCtdPt7\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Material Transfer</span>\",\"col\":12}},{\"id\":\"wek2Jl64z-\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Material Transfer Request\",\"col\":3}},{\"id\":\"6IoYAKVq9X\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"pnQxnrK7CO\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Reports</b></span>\",\"col\":12}},{\"id\":\"LF1k4DeHDD\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"RFQ-Supplier Quotation-PO Report\",\"col\":3}}]",
  "creation": "2025-12-06 01:38:25.622071",
  "custom_blocks": [],
  "docstatus": 0,
@@ -13,7 +13,7 @@
  "is_hidden": 0,
  "label": "Material Transfer",
  "links": [],
- "modified": "2025-12-07 11:22:09.944503",
+ "modified": "2026-01-16 14:08:40.998118",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Material Transfer",
@@ -25,6 +25,14 @@
  "roles": [],
  "sequence_id": 2.0,
  "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "RFQ-Supplier Quotation-PO Report",
+   "link_to": "RFQ-Supplier Quotation-PO Report",
+   "report_ref_doctype": "Request for Quotation",
+   "type": "Report"
+  },
   {
    "color": "Grey",
    "doc_view": "List",

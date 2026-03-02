@@ -1,0 +1,92 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-01-26 18:37:48.211280",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "parent_bom",
+  "parent_item",
+  "parent_component",
+  "m_code",
+  "g_code",
+  "qty_per_unit",
+  "column_break_1",
+  "total_qty_required"
+ ],
+ "fields": [
+  {
+   "fieldname": "parent_bom",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Parent BOM",
+   "options": "BOM"
+  },
+  {
+   "fieldname": "parent_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Parent Item",
+   "options": "Item",
+   "fetch_from": "parent_bom.item",
+   "read_only": 1
+  },
+  {
+   "fieldname": "parent_component",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Parent Component",
+   "options": "Project Component Master",
+   "description": "Component Master of the parent item (for hierarchy traversal)"
+  },
+  {
+   "fieldname": "m_code",
+   "fieldtype": "Data",
+   "label": "M-Code",
+   "read_only": 1,
+   "description": "Root assembly code (item starting with M)"
+  },
+  {
+   "fieldname": "g_code",
+   "fieldtype": "Data",
+   "label": "G-Code",
+   "read_only": 1,
+   "description": "Sub-assembly code (item starting with G)"
+  },
+  {
+   "fieldname": "qty_per_unit",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Qty per Unit",
+   "precision": "2",
+   "description": "Qty of this component per unit of parent"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "total_qty_required",
+   "fieldtype": "Float",
+   "label": "Total Qty Required",
+   "precision": "2",
+   "description": "If project requires N units of parent, this is N * qty_per_unit"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-01-26 18:48:00.000000",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Component BOM Usage",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

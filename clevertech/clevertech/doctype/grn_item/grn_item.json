@@ -10,7 +10,12 @@
   "item_name",
   "qty_to_inspect",
   "accepted_qty",
-  "rejected_qty"
+  "rejected_qty",
+  "reason",
+  "quality_inspection_id",
+  "type_of_issue",
+  "accepted_stock_entry",
+  "rejected_stock_entry"
  ],
  "fields": [
   {
@@ -47,13 +52,44 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Rejected Qty"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Reason"
+  },
+  {
+   "fieldname": "quality_inspection_id",
+   "fieldtype": "Link",
+   "label": "Quality Inspection ID",
+   "options": "Quality Inspection",
+   "read_only": 1
+  },
+  {
+   "fieldname": "type_of_issue",
+   "fieldtype": "Select",
+   "label": "Type of Issue",
+   "options": "\nDesign\nSupplier\nOther"
+  },
+  {
+   "fieldname": "accepted_stock_entry",
+   "fieldtype": "Link",
+   "label": "Accepted Stock Entry",
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "rejected_stock_entry",
+   "fieldtype": "Link",
+   "label": "Rejected Stock Entry",
+   "options": "Stock Entry"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-12-10 13:02:24.987332",
+ "modified": "2026-01-14 11:07:10.536082",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "GRN Item",

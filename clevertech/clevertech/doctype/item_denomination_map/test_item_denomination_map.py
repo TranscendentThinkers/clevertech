@@ -1,0 +1,9 @@
+# Copyright (c) 2026, Bharatbodh and Contributors
+# See license.txt
+
+# import frappe
+from frappe.tests.utils import FrappeTestCase
+
+
+class TestItemDenominationMap(FrappeTestCase):
+	pass

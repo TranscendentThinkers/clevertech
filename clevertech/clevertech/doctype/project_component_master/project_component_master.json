@@ -1,0 +1,484 @@
+{
+ "actions": [],
+ "autoname": "format:PCM-{project}-{######}",
+ "creation": "2026-01-26 18:16:49.102718",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_identification",
+  "project",
+  "item_code",
+  "item_name",
+  "description",
+  "column_break_1",
+  "component_image",
+  "released_for_procurement",
+  "machine_code",
+  "m_code",
+  "g_code",
+  "cost_center",
+  "section_hierarchy",
+  "parent_component",
+  "bom_level",
+  "column_break_2",
+  "has_bom",
+  "active_bom",
+  "section_loose_item",
+  "is_loose_item",
+  "loose_item_reason",
+  "column_break_3",
+  "can_be_converted_to_bom",
+  "bom_conversion_status",
+  "section_budget",
+  "budgeted_rate",
+  "budgeted_rate_calculated",
+  "column_break_4",
+  "target_delivery_date",
+  "lead_time_days",
+  "section_procurement",
+  "loose_qty_required",
+  "bom_qty_required",
+  "project_qty",
+  "total_qty_limit",
+  "column_break_5",
+  "total_qty_procured",
+  "procurement_balance",
+  "procurement_status",
+  "section_status",
+  "make_or_buy",
+  "created_from",
+  "design_status",
+  "bom_structure_hash",
+  "column_break_6",
+  "remarks",
+  "version_change_remarks",
+  "section_procurement_records",
+  "procurement_records",
+  "section_bom_usage",
+  "bom_usage",
+  "section_bom_version_history",
+  "bom_version_history"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_identification",
+   "fieldtype": "Section Break",
+   "label": "Component Identification"
+  },
+  {
+   "fieldname": "project",
+   "fieldtype": "Link",
+   "in_filter": 1,
+   "in_global_search": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Project",
+   "options": "Project",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Item Code",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "item_code.item_name",
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Item Name",
+   "read_only": 1
+  },
+  {
+   "fetch_from": "item_code.description",
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break",
+   "options": "cost center"
+  },
+  {
+   "description": "Auto-fetched from Item. Can be overridden for component-specific image.",
+   "fetch_from": "item_code.image",
+   "fieldname": "component_image",
+   "fieldtype": "Attach Image",
+   "label": "Component Image"
+  },
+  {
+   "fieldname": "section_hierarchy",
+   "fieldtype": "Section Break",
+   "label": "Hierarchy"
+  },
+  {
+   "description": "Auto-populated from BOM upload",
+   "fieldname": "parent_component",
+   "fieldtype": "Link",
+   "label": "Parent Component",
+   "options": "Project Component Master"
+  },
+  {
+   "default": "0",
+   "description": "0=top level, 1=first child, 2=second child...",
+   "fieldname": "bom_level",
+   "fieldtype": "Int",
+   "label": "BOM Level"
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Auto-set if this component has its own BOM",
+   "fieldname": "has_bom",
+   "fieldtype": "Check",
+   "label": "Has BOM",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.has_bom==1",
+   "description": "Current active BOM for this component",
+   "fieldname": "active_bom",
+   "fieldtype": "Link",
+   "label": "Active BOM",
+   "options": "BOM"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_loose_item",
+   "fieldtype": "Section Break",
+   "label": "Loose Item Configuration"
+  },
+  {
+   "default": "0",
+   "description": "Raw material procured outside BOM structure",
+   "fieldname": "is_loose_item",
+   "fieldtype": "Check",
+   "label": "Is Loose Item"
+  },
+  {
+   "depends_on": "eval:doc.is_loose_item==1",
+   "description": "Why procured as loose item (long lead time, design pending, etc.)",
+   "fieldname": "loose_item_reason",
+   "fieldtype": "Small Text",
+   "label": "Loose Item Reason"
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.is_loose_item==1",
+   "description": "Allow this loose item to be used in BOMs",
+   "fieldname": "can_be_converted_to_bom",
+   "fieldtype": "Check",
+   "label": "Can be Converted to BOM"
+  },
+  {
+   "default": "Not Applicable",
+   "depends_on": "eval:doc.is_loose_item==1",
+   "description": "Partial = used in some BOMs, still loose in others",
+   "fieldname": "bom_conversion_status",
+   "fieldtype": "Select",
+   "label": "BOM Conversion Status",
+   "options": "\nNot Applicable\nPending Conversion\nConverted to BOM\nPartial"
+  },
+  {
+   "fieldname": "section_budget",
+   "fieldtype": "Section Break",
+   "label": "Budget & Timeline"
+  },
+  {
+   "description": "Target cost per unit for this component",
+   "fieldname": "budgeted_rate",
+   "fieldtype": "Currency",
+   "label": "Budgeted Rate"
+  },
+  {
+   "description": "Auto-calculated from child components",
+   "fieldname": "budgeted_rate_calculated",
+   "fieldtype": "Currency",
+   "label": "Budgeted Rate (Calculated)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "target_delivery_date",
+   "fieldtype": "Date",
+   "label": "Target Delivery Date"
+  },
+  {
+   "fieldname": "lead_time_days",
+   "fieldtype": "Int",
+   "label": "Lead Time (Days)"
+  },
+  {
+   "fieldname": "section_procurement",
+   "fieldtype": "Section Break",
+   "label": "Procurement Tracking"
+  },
+  {
+   "depends_on": "eval:doc.is_loose_item==1",
+   "description": "Manually entered qty for loose procurement",
+   "fieldname": "loose_qty_required",
+   "fieldtype": "Float",
+   "label": "Loose Qty Required",
+   "precision": "2"
+  },
+  {
+   "description": "Auto-calculated from all BOMs using this item",
+   "fieldname": "bom_qty_required",
+   "fieldtype": "Float",
+   "label": "BOM Qty Required",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "From Excel for BOM Upload (read-only), manually entered for Cutover/Manual Entry",
+   "fieldname": "project_qty",
+   "fieldtype": "Float",
+   "label": "Project Qty Required",
+   "precision": "2",
+   "read_only_depends_on": "eval:doc.created_from=='BOM Upload'"
+  },
+  {
+   "description": "MAX(project_qty, bom_qty_required) - hard procurement limit",
+   "fieldname": "total_qty_limit",
+   "fieldtype": "Float",
+   "label": "Total Qty Limit",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Sum of all procurement quantities",
+   "fieldname": "total_qty_procured",
+   "fieldtype": "Float",
+   "label": "Total Qty Procured",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "description": "total_qty_limit - total_qty_procured",
+   "fieldname": "procurement_balance",
+   "fieldtype": "Float",
+   "label": "Procurement Balance",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "description": "Auto-calculated based on procurement records",
+   "fieldname": "procurement_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Procurement Status",
+   "options": "\nNot Started\nIn Progress\nCompleted\nOver-procured",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_status",
+   "fieldtype": "Section Break",
+   "label": "Status"
+  },
+  {
+   "description": "Make = assembled in-house (children procured separately). Buy = procured as unit.",
+   "fieldname": "make_or_buy",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Make / Buy",
+   "options": "\nMake\nBuy"
+  },
+  {
+   "description": "How this Component Master was created (for traceability)",
+   "fieldname": "created_from",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Created From",
+   "options": "\nBOM Upload\nCutover\nManual Entry",
+   "read_only": 1
+  },
+  {
+   "default": "Draft",
+   "fieldname": "design_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Design Status",
+   "options": "\nDraft\nDesign Released\nProcurement Ready\nObsolete"
+  },
+  {
+   "description": "Hash of BOM structure for change detection",
+   "fieldname": "bom_structure_hash",
+   "fieldtype": "Text",
+   "hidden": 1,
+   "label": "BOM Structure Hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_6",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "remarks",
+   "fieldtype": "Text",
+   "label": "Remarks"
+  },
+  {
+   "description": "Reason for allowing BOM version change (logged during upload)",
+   "fieldname": "version_change_remarks",
+   "fieldtype": "Small Text",
+   "label": "Version Change Remarks",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_procurement_records",
+   "fieldtype": "Section Break",
+   "label": "Procurement Records"
+  },
+  {
+   "description": "Track all procurement documents for this component",
+   "fieldname": "procurement_records",
+   "fieldtype": "Table",
+   "label": "Procurement Records",
+   "options": "Component Procurement Record"
+  },
+  {
+   "fieldname": "section_bom_usage",
+   "fieldtype": "Section Break",
+   "label": "BOM Usage"
+  },
+  {
+   "description": "Track all BOMs where this component is used",
+   "fieldname": "bom_usage",
+   "fieldtype": "Table",
+   "label": "BOM Usage",
+   "options": "Component BOM Usage"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "section_bom_version_history",
+   "fieldtype": "Section Break",
+   "label": "BOM Version History"
+  },
+  {
+   "description": "Track all BOM versions for this component with timestamps and remarks",
+   "fieldname": "bom_version_history",
+   "fieldtype": "Table",
+   "label": "BOM Version History",
+   "options": "Component BOM Version History"
+  },
+  {
+   "fieldname": "released_for_procurement",
+   "fieldtype": "Select",
+   "label": "Released for Procurement",
+   "options": "Yes\nNo"
+  },
+  {
+   "fieldname": "machine_code",
+   "fieldtype": "Data",
+   "in_filter": 1,
+   "in_global_search": 1,
+   "in_list_view": 1,
+   "in_preview": 1,
+   "in_standard_filter": 1,
+   "label": "Machine Code"
+  },
+  {
+   "description": "Root assembly code (item starting with M) - for items without bom_usage",
+   "fieldname": "m_code",
+   "fieldtype": "Data",
+   "label": "M-Code"
+  },
+  {
+   "description": "Sub-assembly code (item starting with G) - for items without bom_usage or single-parent",
+   "fieldname": "g_code",
+   "fieldtype": "Data",
+   "label": "G-Code"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "label": "Cost Center",
+   "options": "Cost Center"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-02-09 10:16:58.624796",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Project Component Master",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Manufacturing Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Purchase User",
+   "share": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Component Master Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
