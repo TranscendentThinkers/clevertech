@@ -80,7 +80,7 @@ def on_bom_validate(doc, method=None):
                     "This ensures version history is properly maintained and prevents conflicts."
                 ).format(old_bom)
 
-                frappe.throw(error_msg, title=_("BOM Version Change Blocked"))
+                frappe.msgprint(error_msg, title=_("BOM Version Change — Impacted MRs"), indicator="orange")
 
     except frappe.DoesNotExistError:
         # Old BOM doesn't exist anymore - allow submission
@@ -320,6 +320,11 @@ def _log_bom_version_change(project, item_code, old_bom_name, new_bom_name, rema
         structure_hash = calculate_bom_structure_hash(new_bom_doc)
     except frappe.DoesNotExistError:
         structure_hash = None
+
+    # Guard: skip if this BOM is already logged as current (prevents duplicates from double-submit)
+    for row in component_master.bom_version_history:
+        if row.bom_name == new_bom_name and row.is_current:
+            return
 
     # Add new version to history
     component_master.append("bom_version_history", {
@@ -1203,6 +1208,9 @@ def recalculate_component_masters_for_project(project):
     """
     Recalculate all Component Master quantities for a project.
 
+    CRITICAL: Process CMs in topological order (parents before children) to ensure
+    child calculations use up-to-date parent total_qty_limit values.
+
     Call this AFTER frappe.db.commit() to ensure all BOM data is saved.
     This runs synchronously to ensure values are immediately available.
 
@@ -1212,11 +1220,9 @@ def recalculate_component_masters_for_project(project):
     Returns:
         dict: Summary of recalculations (updated count, errors)
     """
-    component_masters = frappe.get_all(
-        "Project Component Master",
-        filters={"project": project},
-        pluck="name"
-    )
+    # Build topological ordering: parents must be processed before children
+    # because calculate_bom_qty_required() reads parent's total_qty_limit from DB
+    component_masters = _get_cms_in_topological_order(project)
 
     updated = 0
     errors = []
@@ -1254,6 +1260,83 @@ def recalculate_component_masters_for_project(project):
         "total": len(component_masters),
         "errors": errors
     }
+
+
+def _get_cms_in_topological_order(project):
+    """
+    Return CM names in topological order (parents before children).
+
+    Uses Kahn's algorithm for topological sort based on bom_usage parent relationships.
+    This ensures parent CMs are recalculated before their children, so children can
+    read correct parent total_qty_limit values from the database.
+    """
+    # Get all CMs for this project
+    cms = frappe.get_all(
+        "Project Component Master",
+        filters={"project": project},
+        fields=["name", "item_code"]
+    )
+
+    if not cms:
+        return []
+
+    # Build mappings
+    item_to_cm = {cm["item_code"]: cm["name"] for cm in cms}
+    cm_names = {cm["name"] for cm in cms}
+
+    # Get all bom_usage relationships (child_cm -> parent_item mappings)
+    bom_usages = frappe.db.sql("""
+        SELECT parent AS child_cm, parent_item
+        FROM `tabComponent BOM Usage`
+        WHERE parent IN %(cm_names)s
+    """, {"cm_names": list(cm_names)}, as_dict=True)
+
+    # Build dependency graph: cm_name -> set of parent cm_names
+    dependencies = {cm["name"]: set() for cm in cms}
+    in_degree = {cm["name"]: 0 for cm in cms}
+
+    for usage in bom_usages:
+        child_cm = usage["child_cm"]
+        parent_item = usage["parent_item"]
+        parent_cm = item_to_cm.get(parent_item)
+
+        if parent_cm and parent_cm in cm_names:
+            # Child depends on parent (parent must be processed first)
+            dependencies[child_cm].add(parent_cm)
+            in_degree[child_cm] += 1
+
+    # Kahn's algorithm: process nodes with no dependencies first
+    queue = [cm for cm in cm_names if in_degree[cm] == 0]
+    result = []
+
+    while queue:
+        # Process nodes with no remaining dependencies
+        # Sort for deterministic ordering
+        queue.sort()
+        current = queue.pop(0)
+        result.append(current)
+
+        # Remove this node from dependents' dependencies
+        for dependent in cm_names:
+            if current in dependencies[dependent]:
+                dependencies[dependent].remove(current)
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+    # Check for cycles (shouldn't happen in valid BOM structures)
+    if len(result) != len(cm_names):
+        frappe.log_error(
+            f"Topological sort incomplete for project {project}. "
+            f"Processed {len(result)} of {len(cm_names)} CMs. "
+            f"Possible circular BOM dependency.",
+            "CM Recalculation Ordering Error"
+        )
+        # Fallback: return what we have + remaining (unordered)
+        remaining = cm_names - set(result)
+        result.extend(sorted(remaining))
+
+    return result
 
 
 def _check_bom_version_blocking(project, old_bom_name):

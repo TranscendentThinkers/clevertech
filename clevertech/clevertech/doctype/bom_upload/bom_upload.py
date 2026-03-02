@@ -75,7 +75,6 @@ def to_float(val, default=0):
         return float(val)
     except Exception:
         return default
-
 def _calculate_tree_hash(children):
     """
     Calculate MD5 hash of BOM structure from tree node children.
@@ -267,42 +266,113 @@ def build_tree(rows):
 
 
 # ================= Items =================
-
 def ensure_item_exists(item_code, description, extended_description, uom, row_num, ws, image_loader, material=None, treatment=None, weight=None, part_number=None, manufacturer=None, revision=None):
     """
     Create Item master if it doesn't exist.
-    If item exists but has no image, update it with image from Excel.
+    If item exists, update fields that have changed.
 
     Returns:
         str: "created" | "existing" | "updated" | "failed"
     """
     if frappe.db.exists("Item", item_code):
-        # Item exists - check if we need to update image
+        # Item exists - check if we need to update any fields
         existing_item = frappe.get_doc("Item", item_code)
+        
+        # Check if revision has changed - only update if revision is different
+        existing_revision = existing_item.get("custom_revision_no")
+        new_revision = revision if revision is not None and revision != "" else None
+        
+        # If revisions match, skip update
+        if existing_revision == new_revision:
+            return "existing"
+        
+        # Revision has changed, proceed with updates
+        updated = False
 
-        # Only update image if item doesn't have one and Excel has an image
-        if not existing_item.image and HAS_IMAGE_LOADER and image_loader:
+        # Prepare new values
+        item_name = description or item_code
+        item_description = extended_description or description or item_code
+        item_group, hsn_code, default_expense_account = get_item_group_and_hsn(item_code)
+        normalized_material = normalize_material(material)
+        type_of_material = get_type_of_material(description)
+        surface_treatment = get_surface_treatment(treatment)
+
+        # Check and update basic fields
+        if existing_item.item_name != item_name:
+            existing_item.item_name = item_name
+            updated = True
+        
+        if existing_item.description != item_description:
+            existing_item.description = item_description
+            updated = True
+        
+        if existing_item.item_group != item_group:
+            existing_item.item_group = item_group
+            updated = True
+        
+        if uom and existing_item.stock_uom != uom:
+            existing_item.stock_uom = uom
+            updated = True
+
+        # Check and update custom fields
+        if hsn_code and existing_item.get("gst_hsn_code") != hsn_code:
+            existing_item.gst_hsn_code = hsn_code
+            updated = True
+        
+        if normalized_material and existing_item.get("custom_material") != normalized_material:
+            existing_item.custom_material = normalized_material
+            updated = True
+        
+        if type_of_material and existing_item.get("custom_type_of_material") != type_of_material:
+            existing_item.custom_type_of_material = type_of_material
+            updated = True
+        
+        if surface_treatment and existing_item.get("custom_class_name") != surface_treatment:
+            existing_item.custom_class_name = surface_treatment
+            updated = True
+        
+        if weight and existing_item.get("custom_last_updating_of") != weight:
+            existing_item.custom_last_updating_of = weight
+            updated = True
+        
+        if part_number and existing_item.get("custom_excode") != part_number:
+            existing_item.custom_excode = part_number
+            updated = True
+        
+        if manufacturer and existing_item.get("custom_item_short_description") != manufacturer:
+            existing_item.custom_item_short_description = manufacturer
+            updated = True
+        
+        # Update revision number (we know it's changed at this point)
+        if new_revision is not None:
+            existing_item.custom_revision_no = new_revision
+            updated = True
+
+        # Update item defaults for expense account if needed
+        if default_expense_account:
+            existing_defaults = [d for d in existing_item.get("item_defaults", []) 
+                               if d.company == "Clevertech Packaging Automation Solutions Pvt. Ltd."]
+            
+            if not existing_defaults:
+                existing_item.append("item_defaults", {
+                    "company": "Clevertech Packaging Automation Solutions Pvt. Ltd.",
+                    "expense_account": default_expense_account
+                })
+                updated = True
+            elif existing_defaults[0].expense_account != default_expense_account:
+                existing_defaults[0].expense_account = default_expense_account
+                updated = True
+
+        # Save if any updates were made
+        if updated:
             try:
-                image_cell = f"A{row_num}"
-                if image_loader.image_in(image_cell):
-                    img = image_loader.get(image_cell)
-                    img_bytes = io.BytesIO()
-                    img.save(img_bytes, format="PNG")
-
-                    file_obj = save_file(
-                        f"{item_code}.png",
-                        img_bytes.getvalue(),
-                        "Item",
-                        item_code,
-                        is_private=0
-                    )
-
-                    existing_item.image = file_obj.file_url
-                    existing_item.flags.ignore_validate = True
-                    existing_item.save(ignore_permissions=True)
-                    return "updated"
+                existing_item.flags.ignore_validate = True
+                existing_item.save(ignore_permissions=True)
+                frappe.log_error(f"Item updated: {item_code}", "BOM Upload Item Update")
+                return "updated"
             except Exception as e:
-                frappe.log_error(f"Image update failed for {item_code}: {str(e)}", "BOM Upload Image Error")
+                frappe.log_error(f"Item update failed for {item_code}: {str(e)}", "BOM Upload Item Error")
+                return "failed"
 
         return "existing"
 
@@ -356,8 +426,8 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
     # Add default expense account to item defaults
     if default_expense_account:
         item.append("item_defaults", {
-            "company": "Clevertech Packaging Automation Solutions Pvt Ltd",
-            "default_expense_account": default_expense_account
+            "company": "Clevertech Packaging Automation Solutions Pvt. Ltd.",
+            "expense_account": default_expense_account
         })
 
     # Add tax templates (hardcoded like the macro)
@@ -532,7 +602,6 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
 
     bom.insert(ignore_permissions=True)
     bom.submit()
-
     # Log success with BOM name
     frappe.log_error(
         title=f"DEBUG: BOM Created - {item_code}",

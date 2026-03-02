@@ -7,6 +7,7 @@
  "engine": "InnoDB",
  "field_order": [
   "item_code",
+  "item_description",
   "column_break_xaow",
   "item_name",
   "section_break_scrs",
@@ -50,7 +51,8 @@
    "fieldname": "suggested_supplier",
    "fieldtype": "Link",
    "label": "Suggested Supplier",
-   "options": "Supplier"
+   "options": "Supplier",
+   "read_only": 1
   },
   {
    "fieldname": "column_break_xaow",
@@ -154,20 +156,26 @@
   },
   {
    "fieldname": "delivery_term",
-   "fieldtype": "Select",
-   "label": "Delivery Term",
-   "options": "\nP&F Extra at Actual\nCost and Freight\nCost, Insurance and Freight\nCarriage and Insurance Paid to\nCarriage Paid To\nDelivered At Place\nDelivered Duty Paid\nDelivered At Place Unloaded\nEx Works\nFree Alongside Ship\nFree Carrier\nFree On Board"
+   "fieldtype": "Link",
+   "label": "Delivery Terms",
+   "options": "Incoterm"
   },
   {
    "fieldname": "column_break_eufe",
    "fieldtype": "Column Break"
+  },
+  {
+   "fetch_from": "item_code.description",
+   "fieldname": "item_description",
+   "fieldtype": "Data",
+   "label": "Item Description"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-02-09 16:21:52.125791",
+ "modified": "2026-02-17 12:19:40.098650",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Selection Item",

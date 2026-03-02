@@ -1,5 +1,23 @@
 frappe.ui.form.on('BOM Upload', {
     refresh(frm) {
+        // Hide the Phase 2 button (not ready for use)
+        frm.toggle_display('create_boms_with_validation', false);
+
+        if (!frm.is_new()) {
+            // Phase 1 button — simple upload, no procurement blocking
+            frm.add_custom_button(__('Create BOM - Phase 1'), function() {
+                if (!frm.doc.bom_file) {
+                    frappe.msgprint(__('Please attach a BOM Excel file first.'));
+                    return;
+                }
+                if (!frm.doc.project) {
+                    frappe.msgprint(__('Please select a Project first.'));
+                    return;
+                }
+                _run_phase1_upload(frm, false);
+            }).addClass('btn-primary');
+        }
+
         frm.add_custom_button(__('Debug bom_qty_required'), function() {
             _run_debug_bom_qty_recalc(frm);
         }, __('Debug'));
@@ -169,6 +187,115 @@ frappe.ui.form.on('BOM Upload', {
         );
     }
 });
+
+
+// ==================== Phase 1 Upload ====================
+
+function _run_phase1_upload(frm, confirmed, state_confirmed) {
+    frappe.call({
+        method: 'clevertech.clevertech.doctype.bom_upload.bom_upload_phase1.create_boms_phase1',
+        args: {
+            docname: frm.doc.name,
+            confirmed: confirmed ? 1 : 0,
+            state_confirmed: state_confirmed ? 1 : 0
+        },
+        freeze: true,
+        freeze_message: confirmed ? __('Creating BOMs...') : __('Analyzing BOM upload...'),
+        callback(r) {
+            if (!r.message) {
+                frappe.msgprint({ title: __('Error'), message: __('No response from server'), indicator: 'red' });
+                return;
+            }
+
+            const result = r.message;
+
+            if (result.status === 'needs_state_confirmation') {
+                const w = result.warnings || {};
+                let html = '<div class="alert alert-warning" style="margin-bottom:12px">'
+                    + '<b>The following items have non-Released design status.</b><br>'
+                    + 'Component Masters and BOMs will still be created for them.<br>'
+                    + 'However, these items <b>cannot be procured</b> until their status is Released.'
+                    + '</div>';
+
+                if (w.obsolete && w.obsolete.length) {
+                    html += '<p><b>Obsolete items (' + w.obsolete.length + '):</b></p><ul>';
+                    w.obsolete.forEach(function(item) {
+                        html += '<li><b>' + item.item_code + '</b>'
+                            + (item.description ? ' — ' + item.description : '') + '</li>';
+                    });
+                    html += '</ul>';
+                }
+                if (w.other && w.other.length) {
+                    html += '<p><b>Non-Released items (' + w.other.length + '):</b></p><ul>';
+                    w.other.forEach(function(item) {
+                        html += '<li><b>' + item.item_code + '</b> — STATE: ' + item.state
+                            + (item.description ? ' — ' + item.description : '') + '</li>';
+                    });
+                    html += '</ul>';
+                }
+                html += '<p style="margin-top:12px">Proceed with upload?</p>';
+
+                frappe.confirm(
+                    html,
+                    function() {
+                        // Yes — re-call with state_confirmed=true
+                        _run_phase1_upload(frm, false, true);
+                    },
+                    function() {
+                        // No — cancel cleanly
+                        frappe.msgprint({
+                            title: __('Upload Cancelled'),
+                            message: __('No changes were made.'),
+                            indicator: 'blue'
+                        });
+                    }
+                );
+                return;
+            }
+
+            if (result.status === 'needs_confirmation') {
+                const changes = result.version_changes || [];
+                const items_html = changes.map(function(c) {
+                    return '<li><b>' + c.item_code + '</b>'
+                        + (c.description ? ' — ' + c.description : '')
+                        + '<br><small>Current BOM: <a href="/app/bom/' + c.existing_bom + '">'
+                        + c.existing_bom + '</a></small></li>';
+                }).join('');
+
+                frappe.confirm(
+                    '<p>The following BOMs will be updated to a new version:</p>'
+                    + '<ul style="margin-top:8px">' + items_html + '</ul>'
+                    + '<p style="margin-top:12px">Proceed with version update?</p>',
+                    function() {
+                        // Yes — re-call with confirmed=true, preserving state_confirmed
+                        _run_phase1_upload(frm, true, state_confirmed);
+                    },
+                    function() {
+                        // No — cancel cleanly
+                        frappe.msgprint({
+                            title: __('Upload Cancelled'),
+                            message: __('No BOMs were created or modified. Items and Component Masters created earlier are retained.'),
+                            indicator: 'blue'
+                        });
+                    }
+                );
+                return;
+            }
+
+            if (result.status === 'success') {
+                _show_upload_success(result);
+                frm.reload_doc();
+            }
+        },
+        error() {
+            frappe.msgprint({
+                title: __('Error'),
+                message: __('Failed to process BOM upload. Check error log.'),
+                indicator: 'red'
+            });
+        }
+    });
+}
 
 
 // ==================== Dialog Functions ====================

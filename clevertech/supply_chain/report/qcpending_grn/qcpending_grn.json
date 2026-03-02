@@ -1,0 +1,41 @@
+{
+ "add_total_row": 0,
+ "add_translate_data": 0,
+ "columns": [],
+ "creation": "2026-02-25 11:36:41.903331",
+ "disabled": 0,
+ "docstatus": 0,
+ "doctype": "Report",
+ "filters": [],
+ "idx": 0,
+ "is_standard": "Yes",
+ "json": "{\"filters\":[[\"Purchase Receipt\",\"status\",\"!=\",\"Cancelled\",false],[\"Purchase Receipt\",\"status\",\"!=\",\"Draft\",false],[\"Purchase Receipt\",\"custom_quality_status\",\"=\",\"Pending\",false]],\"fields\":[[\"name\",\"Purchase Receipt\"],[\"docstatus\",\"Purchase Receipt\"],[\"title\",\"Purchase Receipt\"],[\"posting_date\",\"Purchase Receipt\"],[\"grand_total\",\"Purchase Receipt\"],[\"status\",\"Purchase Receipt\"],[\"custom_quality_status\",\"Purchase Receipt\"],[\"per_returned\",\"Purchase Receipt\"],[\"currency\",\"Purchase Receipt\"],[\"supplier\",\"Purchase Receipt\"],[\"supplier_name\",\"Purchase Receipt\"],[\"base_grand_total\",\"Purchase Receipt\"],[\"is_subcontracted\",\"Purchase Receipt\"],[\"transporter_name\",\"Purchase Receipt\"],[\"is_return\",\"Purchase Receipt\"],[\"per_billed\",\"Purchase Receipt\"]],\"order_by\":\"`tabPurchase Receipt`.`modified` desc\",\"add_totals_row\":0,\"page_length\":20,\"column_widths\":{\"name\":120,\"title\":120,\"posting_date\":100,\"grand_total\":120,\"status\":150,\"custom_quality_status\":120,\"per_returned\":120,\"currency\":120,\"supplier\":150,\"supplier_name\":120,\"base_grand_total\":120,\"is_subcontracted\":120,\"transporter_name\":120,\"is_return\":120,\"per_billed\":120},\"group_by\":null}",
+ "letter_head": null,
+ "modified": "2026-02-25 11:40:44.643384",
+ "modified_by": "Administrator",
+ "module": "supply_chain",
+ "name": "QCPending-GRN",
+ "owner": "support@transcendent.co.in",
+ "prepared_report": 0,
+ "ref_doctype": "Purchase Receipt",
+ "report_name": "QCPending-GRN",
+ "report_type": "Report Builder",
+ "roles": [
+  {
+   "role": "Stock User"
+  },
+  {
+   "role": "Stock Manager"
+  },
+  {
+   "role": "Accounts User"
+  },
+  {
+   "role": "Purchase User"
+  },
+  {
+   "role": "Purchase Manager"
+  }
+ ],
+ "timeout": 0
+}

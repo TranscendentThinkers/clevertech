@@ -1,5 +1,328 @@
 ## Implementation Status
 
+---
+
+### BOM Upload — Duplicate Version History Guard [2026-02-24]
+
+**Root cause:** `create_bom_recursive` (bom_upload.py ~line 499) recurses into child assemblies
+internally. `_create_boms_for_tree.process_node` (bom_upload_phase1.py) also recurses bottom-up.
+This means `create_bom_recursive` is called **twice** for non-root assemblies before
+`frappe.db.commit()` flushes the new BOM — so `on_bom_submit` fires twice →
+`_log_bom_version_change` runs twice → duplicate rows in `bom_version_history`.
+
+**Fix:** Deduplication guard added in `_log_bom_version_change` (bom_hooks.py, before
+`component_master.append`):
+
+```python
+# Guard: skip if this BOM is already logged as current (prevents duplicates from double-submit)
+for row in component_master.bom_version_history:
+    if row.bom_name == new_bom_name and row.is_current:
+        return
+```
+
+**Note on BOM hash:** Hash is based on sorted `(item_code, float(qty))` pairs only. Changing any
+column other than qty in the Excel will NOT trigger a hash mismatch → BOMs are correctly skipped.
+This is expected behaviour, not a bug. Phase 1 excludes BOM diff display (Phase 2 only).
+
+---
+
+### Design Status Validation & State Mapping [2026-02-23]
+
+**Context:** BOM Excel has a STATE column (column J). Three values are valid: `Released`,
+`In Creation`, `Obsolete`. Previous code used `.title()` which produced invalid values
+(`"Released"`, `"In Creation"`) for the Project Component Master `design_status` Select field
+whose options were `Draft / Design Released / Procurement Ready / Obsolete` — causing a wall
+of Frappe `validate_select` errors on every BOM upload.
+
+---
+
+#### 1. Project Component Master — `design_status` field
+
+Options simplified to exactly match the three Excel STATE values:
+
+| Old options | New options |
+|---|---|
+| (blank) | (blank) |
+| Draft | In Creation |
+| Design Released | Released |
+| Procurement Ready | Obsolete |
+| Obsolete | |
+
+Default changed from `Draft` → `In Creation` (conservative).
+
+**File:** `clevertech/doctype/project_component_master/project_component_master.json`
+Run `bench migrate` to apply.
+
+---
+
+#### 2. `bom_upload_enhanced.py` — state mapping
+
+Added `_map_state_to_design_status(state)` helper (case-insensitive):
+
+| Excel STATE (any case) | design_status |
+|---|---|
+| `released` | `Released` |
+| `in creation` | `In Creation` |
+| `obsolete` | `Obsolete` |
+| blank | `In Creation` |
+| anything else | `In Creation` |
+
+Replaced the broken `.title()` one-liner in `create_component_masters_for_all_items`.
+
+Added `collect_state_warnings(tree)` — scans the filtered tree (after G-code filter) and
+returns two lists:
+- `"obsolete"` — items with STATE = "Obsolete"
+- `"other"` — items with STATE other than "Released" or blank
+
+---
+
+#### 3. Phase 1 BOM Upload — state warning confirmation dialog
+
+Added `state_confirmed` parameter to `create_boms_phase1(docname, confirmed, state_confirmed)`.
+
+**New flow (Step 2b, between G-code filter and item creation):**
+
+```
+If not state_confirmed:
+    collect_state_warnings(tree)
+    If any warnings found:
+        return {"status": "needs_state_confirmation", "warnings": {...}}
+        → JS shows confirm dialog (Cancel / Proceed)
+        → Proceed → re-call with state_confirmed=1
+        → Cancel → "No changes were made."
+```
+
+The dialog shows:
+- Obsolete items (BOMs/CMs will still be created, but procurement blocked)
+- Non-Released items (e.g. M codes "In Creation") with their STATE
+
+**Key: Step 2 (G-code filter) runs before Step 2b (state warning).** The dialog only lists
+items that already survived the G-code filter — non-Released G-codes and their entire subtrees
+are gone before the dialog is reached and will NOT appear in it. Example:
+
+```
+Input tree:
+  M001 (In Creation)
+  ├── G001 (Released)        ← passes G-code filter
+  │   └── D001 (Obsolete)   ← passes (not a G-code)
+  └── G002 (In Creation)    ← filtered out by Step 2 (non-Released G-code)
+      └── E001 (Released)   ← filtered out (child of G002)
+
+After Step 2 — remaining tree:
+  M001 (In Creation)
+  └── G001 (Released)
+      └── D001 (Obsolete)
+
+  msgprint fires: "Non-Released G-Codes Skipped: G002"
+
+Step 2b dialog — only sees remaining tree:
+  M001 → "Non-Released items" list (In Creation)
+  D001 → "Obsolete items" list
+  G002 / E001 → NOT shown (already excluded)
+
+If user proceeds:
+  Items + CMs + BOMs created for: M001, G001, D001 ✅
+  G002, E001: nothing created this run ✅
+```
+
+**Multi-step flow with both confirmations (e.g. M code "In Creation" + BOM version change):**
+1. First call → returns `needs_state_confirmation` → user confirms → re-call with `state_confirmed=1`
+2. Second call → items + CMs created → returns `needs_confirmation` (BOM version change) → user confirms
+   → re-call with `state_confirmed=1, confirmed=1`
+3. Third call → BOMs created → `success`
+
+`state_confirmed` is preserved through the version-change confirm dialog so it doesn't reset.
+
+**Files:** `bom_upload_phase1.py`, `bom_upload.js` (`_run_phase1_upload(frm, confirmed, state_confirmed)`)
+
+---
+
+#### 4. Hiding `create_boms_with_validation` (Create BOM - Phase 2)
+
+**Approach:** `frm.toggle_display('create_boms_with_validation', false)` at the top of the
+`refresh` handler in `bom_upload.js`.
+
+**Why not the JSON `hidden: 1`:** `"hidden": 1` was added to the field in `bom_upload.json`
+but `bench migrate` did not apply it — Frappe skips doctype reload when the JSON `modified`
+timestamp is not newer than what is already in `tabDocField`. The JS approach is reliable
+and requires only `bench restart`, not `bench migrate`.
+
+**Lesson:** For custom doctypes where the `modified` timestamp hasn't been bumped, Frappe
+will not re-sync field properties during migrate. Either bump the `modified` field in the JSON
+before migrating, or handle display state in the form JS.
+
+---
+
+#### 5. MR validation — design_status hard block
+
+`material_request_validation.py → _validate_item_qty()`:
+- Now fetches `design_status` from Project Component Master alongside existing fields
+- Hard block (frappe.throw) if `design_status` is set AND `design_status != "Released"`
+- Error message includes item code, current status, and a link to the Component Master
+- Position: after `make_or_buy == "Make"` check, before qty limit check
+
+**Rule:** Only items with `design_status = "Released"` can be procured. Items with
+`"In Creation"` or `"Obsolete"` are blocked. Items with no PCM (old projects) are not affected.
+
+---
+
+### Phase 1 BOM Upload — Simple Version [2026-02-22]
+
+**Context:** Full Phase 2 PLM upload (bom_upload_enhanced.py) budget not yet approved.
+Phase 1 ships the core value immediately using the same building blocks.
+
+**Button rename / UI changes on BOM Upload form:**
+- `Create BOMs` → hidden (was original bom_upload.py button, no CM support)
+- `Create BOM - Phase 1` → new button (Phase 1, described below)
+- `Create BOMs with Validation` → renamed to `Create BOM - Phase 2` (existing enhanced)
+
+**Phase 1 includes (from enhanced, reused):**
+- Dynamic column mapping (`parse_rows_dynamic`) — handles PE2 format shifts
+- Item creation & update (`ensure_items_for_all_nodes` → `ensure_item_exists`)
+- BOM creation & update (`create_bom_recursive`) — hash-based: skip if unchanged, new version if changed
+- G-code STATE filtering — skip non-released G-codes + entire subtree
+- Component Master creation with Make/Buy prefix logic (M/G=Make, rest=Buy)
+- Loose item check — block if PCM has `is_loose_item=1` AND `can_be_converted_to_bom=0`
+- Post-BOM: `_link_boms_to_component_masters`, `_populate_hierarchy_codes`, `_refresh_bom_usage_hierarchy_codes`, `recalculate_component_masters_for_project`
+- `upload_history` child table on BOM Upload form (audit log)
+
+**Phase 1 excludes (Phase 2 only):**
+- MR / RFQ / PO blocking checks (`_check_procurement_blocking`)
+- BOM diff display (added/removed/changed items per component)
+- Confirmation/remarks flow for changed BOMs
+- Manager role override for PO-stage changes
+- Blocked ancestor cascade (components blocked by changed children)
+- `changed_components` / `requires_confirmation` response statuses
+
+**BOM version confirm dialog (Phase 1 specific):**
+- Before creating BOMs, scan tree for hash mismatches (existing active BOMs that would be versioned)
+- If any found → return `status: "needs_confirmation"` with list of `{item_code, description, existing_bom}`
+- JS shows `frappe.confirm()` with list: "These BOMs will be updated to a new version. Proceed?"
+  - YES → re-call endpoint with `confirmed=True` → proceed with creation
+  - NO → show "Upload cancelled. No BOMs were created or modified." (items/CMs already created are harmless)
+- Note: `bom_version_history` on PCM is still auto-populated by the `on_bom_submit` hook regardless
+
+**Key design decisions from discussion:**
+- Items and CMs are always created (steps 3–5) even if user cancels at confirm dialog
+  → Idempotent and harmless; PCMs will just have `active_bom=null` until re-run
+- `recalculate_component_masters_for_project` is kept — without it PCMs have no quantities
+- `upload_history` is kept — important audit trail of who uploaded what when
+- The `bom_version_history` child table on PCM is NOT skipped; it auto-populates via hook
+
+**Hours quoted:** Phase 1 = 80h total (bom_upload.py foundation + Phase 1 simple version, from scratch). Phase 2 = 80h incremental on top of Phase 1.
+
+**Button approach — app JS vs Client Script:**
+- BOM Upload is a custom doctype owned by the app → buttons belong in `bom_upload.js`, NOT a DB Client Script
+- Client Scripts in DB are only appropriate for standard ERPNext doctypes you can't modify (e.g., Material Request, Purchase Order)
+- The old "Create Items from BOM Upload" Client Script (DB-only, not git-tracked) was disabled and superseded by `bom_upload.js`
+
+**Client Script audit (clevertech-uat DB, 2026-02-22):**
+- 34 total Client Scripts in DB
+- 32 are for standard ERPNext doctypes → correct approach, no action needed
+- 2 are for custom doctypes (should be in app JS files):
+  - "Create Items from BOM Upload" (BOM Upload) → disabled ✓
+  - "GRN" (Quality Clearance) → **broken/dead** (created 10 Dec 2025 by Administrator). Script listens to `frappe.ui.form.on('GRN Quality Inspection', ...)` but doctype was renamed to "Quality Clearance" — event never fires. Logic (auto-populate `grn_items` from PR when `grn_name` selected; auto-set `inspected_by` on load) is NOT in `quality_clearance.js`. Pending: confirm with QC team if feature is needed, port to `quality_clearance.js` if yes, disable DB script either way.
+
+**Files:**
+- Server: `clevertech/doctype/bom_upload/bom_upload_phase1.py` (new)
+- Form JS: `clevertech/doctype/bom_upload/bom_upload.js` (modified — Phase 1 button in refresh, `_run_phase1_upload` with confirm dialog)
+- DocType JSON: `clevertech/doctype/bom_upload/bom_upload.json` (modified — `create_boms` hidden via JSON; `create_boms_with_validation` renamed to "Create BOM - Phase 2"; `hidden: 1` also set in JSON but applied via JS `toggle_display` — see §4 of Design Status section)
+
+---
+
+### RFQ Portal Override [2026-02-14] — Prevent Price-List Rates on Supplier Quotation
+
+**Problem:** When a supplier opens the RFQ web portal and clicks "Make Quotation", the resulting
+Supplier Quotation auto-populates rates from the supplier's price list / last purchase rate.
+The supplier sees old rates instead of blank fields.
+
+**Root Cause Chain:**
+1. RFQ Item doctype has **no `rate` field** — `doc.as_json()` sends no rates to browser
+2. HTML input hardcoded to `value="0.00"` — supplier sees zero (correct)
+3. Supplier clicks "Make Quotation" → JS sends `doc` with items (rate is undefined/0)
+4. `create_supplier_quotation` → `create_rfq_items` reads `data.get("rate")` → gets `None`
+5. `sq_doc.run_method("set_missing_values")` → `set_missing_item_details()` → `get_item_details()`
+   fetches `price_list_rate` from supplier's price list (e.g., 420.0). `rate` stays 0.0.
+6. During `sq_doc.save()` → `validate()` → `calculate_taxes_and_totals()` recalculates
+   `rate` from `price_list_rate` → rate becomes 420.0
+7. SQ saved with old rates → supplier redirected to SQ page → sees old rates
+
+**Debug trace that confirmed the issue (step 3 = set_missing_values sets price_list_rate):**
+```
+1. Rates from JS: {1: 0.0}
+2. After add_items: [(idx=1, rate=None, price_list_rate=None)]
+3. After set_missing_values: [(idx=1, rate=0.0, price_list_rate=420.0)]  ← culprit
+4. After our override: [(idx=1, rate=0.0, price_list_rate=0.0)]
+5. After save: [(idx=1, rate=0.0, price_list_rate=0.0)]  ← fix confirmed
+```
+
+**Solution:** Override `create_supplier_quotation` via `override_whitelisted_methods` hook.
+Our version captures supplier-entered rates before `set_missing_values`, lets it run
+(for currency/taxes/other fields), then overwrites **ALL** rate-related fields before saving:
+`rate`, `price_list_rate`, `base_rate`, `base_price_list_rate`, `net_rate`,
+`discount_percentage`, `discount_amount`, `amount`, `base_amount`, `net_amount`, `base_net_amount`.
+
+**Critical insight:** Only zeroing `rate` is insufficient — `calculate_taxes_and_totals`
+recalculates `rate` from `price_list_rate` during `save()`. Must zero `price_list_rate` too.
+
+**Hook in `hooks.py`:**
+```python
+override_whitelisted_methods = {
+    "erpnext.buying.doctype.request_for_quotation.request_for_quotation.create_supplier_quotation":
+        "clevertech.supply_chain.server_scripts.rfq_portal.create_supplier_quotation"
+}
+```
+
+**File:** `supply_chain/server_scripts/rfq_portal.py`
+
+**Why `override_whitelisted_methods`:**
+- Standard Frappe hook — no erpnext core files modified, survives `bench update`
+- Only overrides the API endpoint routing; original Python function still importable
+- Does not break other apps (unlike copying templates, which broke rendering previously)
+- Works for portal/website pages (same `/api/method/` endpoint as desk)
+
+**Deployment notes:**
+- `bench migrate` required when adding `override_whitelisted_methods` for the first time (not just restart)
+- Code changes within the overridden function only need `bench restart`
+
+**Also fixed:** Removed stale Property Setter `Supplier Quotation-taxes_and_charges-reqd` from
+`supply_chain/custom/supplier_quotation.json` — was making taxes_and_charges mandatory, which
+broke SQ creation from the portal (supplier doesn't set tax template)
+
+---
+
+### 🐛 Bug Fixes [2026-02-11] — CM Recalculation & Machine Code Isolation
+
+**Context:** Discovered during G-code validation integration testing development.
+
+**Bug Fix 1: Topological Sort for CM Recalculation**
+- **Problem:** `recalculate_component_masters_for_project()` in `bom_hooks.py` processed CMs in arbitrary order
+- **Impact:** Child CMs read stale parent `total_qty_limit` values (often 0) during cascade recalculation after Make/Buy changes
+- **Solution:** Implemented `_get_cms_in_topological_order()` using Kahn's algorithm to ensure parents processed before children
+- **Files:** `project_component_master/bom_hooks.py` lines 1202-1306
+- **Pattern:** Build dependency graph from `bom_usage` relationships, use topological sort (in_degree, queue)
+
+**Bug Fix 2: Machine Code Isolation**
+- **Problem:** 4 methods in `project_component_master.py` missing `machine_code` filters in CM lookups
+- **Impact:** Cross-machine CM contamination when same item exists in multiple machines (random CM selected)
+- **Solution:** Added `machine_code` filter to all CM queries in:
+  - `_validate_make_with_buy_parents()` (line 36-39)
+  - `calculate_bom_qty_required()` (line 136-139)
+  - `recalculate_children_bom_qty()` (line 206-209)
+  - `calculate_budgeted_rate_rollup()` (line 306-309)
+- **Pattern:** `filters = {"project": self.project, "item_code": item_code}; if self.machine_code: filters["machine_code"] = self.machine_code`
+
+**Test Infrastructure:**
+- Created `tests/test_g_code_validation.py` — 16 integration tests across 5 categories
+- Created `tests/cleanup_test_data.py` — Safe cleanup with 3 safety checks + 24-hour age verification
+- Key lesson: `machine_code` (VT0000000001) is SEPARATE from `item_code` (MT4000084237)
+
+**Current Status:**
+- ⚠️ **BLOCKED:** Tests reveal 5 CMs failing to create (M-codes and G-codes); all created CMs have `total_qty_limit=0.0`
+- **Next:** Investigate Frappe Error Log for CM creation exception details
+
+---
+
 **Phase 1: DocTypes Created** ✅ (2026-01-26)
 - Project Component Master (40+ fields, 2 child tables)
 - Component Procurement Record (child table)
@@ -4341,14 +4664,235 @@ g_code_limit = sum(
 
 Analysis and design documented. Implementation pending user approval. Resolves deferred "Bug 3: BOM-Level Validation Gap" from 2026-02-09 bug fixes.
 
+**Implementation:** ✅ **COMPLETE** (2026-02-10)
+
+Implementation completed and deployed. Code changes in `material_request_validation.py` and `purchase_order_validation.py`. Testing pending.
+
+### Implementation Details (2026-02-10)
+
+**Files Modified:**
+1. `project_component_master/material_request_validation.py`
+2. `project_component_master/purchase_order_validation.py`
+
+**Changes:**
+
+**material_request_validation.py:**
+- Added `bom_no` parameter to `_validate_item_qty()` function (line 40)
+- Pass `item.get("bom_no")` from MR item to validation function (line 37)
+- Added G-code filtering logic (lines 94-116):
+  - Extract G-code from BOM's item field
+  - Load Component Master with bom_usage child table
+  - Sum `total_qty_required` for all rows where `g_code` matches
+  - Use G-code-specific limit if available, else fallback to CM-level limit
+- Updated error message to show validation context: "G-code G12345678" or "overall limit" (line 135)
+
+**purchase_order_validation.py:**
+- Added `bom_no` parameter to `_validate_item_qty()` function (line 56)
+- Fetch `bom_no` from source Material Request Item via `material_request_item` link (lines 47-51)
+- Added same G-code filtering logic as MR validation (lines 89-111)
+- Updated error message to show validation context (line 130)
+
+**Logic Flow:**
+```python
+# When MR/PO item has bom_no (from "Get Items from BOM"):
+if bom_no:
+    g_code_item = frappe.db.get_value("BOM", bom_no, "item")
+    if g_code_item:
+        cm_doc = frappe.get_doc("Project Component Master", component.name)
+        g_code_limit = sum(
+            row.total_qty_required or 0
+            for row in cm_doc.bom_usage
+            if row.g_code == g_code_item
+        )
+        if g_code_limit > 0:
+            qty_limit = g_code_limit
+            validation_context = f"G-code {g_code_item}"
+
+# Fallback for manual MR/PO (no bom_no):
+else:
+    qty_limit = component.total_qty_limit
+    validation_context = "overall limit"
+```
+
+**Key Design Decisions:**
+1. **No BOM-level validation** - Only G-code aggregate validation (components are fungible within a G-code)
+2. **Backward compatible** - Manual MRs without `bom_no` fall back to CM-level limit
+3. **PO inherits from MR** - PO traces back to source MR item's `bom_no` via `material_request_item` link
+4. **Efficient implementation** - Single sum operation over bom_usage rows (O(n) where n < 10 typically)
+
+**Testing Status:**
+- ✅ Code syntax validation (Python compilation)
+- ✅ Bench restart successful (code loaded)
+- ⏳ Manual testing pending
+- ⏳ Automated tests pending
+
 ---
 
-**Document Version:** 3.13
+## Supply Chain Workflow Reports [2026-02-15]
+
+### Overview
+
+Three new reports to track the supply chain procurement workflow end-to-end:
+1. **MR to RFQ Tracker** — Material Request → Request for Quotation
+2. **RFQ to PO Tracker** — Request for Quotation → Purchase Order ✅
+3. **PO to Delivery Tracker** — Purchase Order → Delivery/GRN ✅
+
+Requirements sourced from: `sites/clevertech-uat.bharatbodh.com/public/files/Supply Chain Workflow.docx` and `Report formats.xlsx`
+
+Location: `clevertech/supply_chain/report/`
+
+### Report 1: MR to RFQ Tracker ✅
+
+**Files:**
+- `clevertech/supply_chain/report/mr_to_rfq_tracker/mr_to_rfq_tracker.py`
+- `clevertech/supply_chain/report/mr_to_rfq_tracker/mr_to_rfq_tracker.js`
+- `clevertech/supply_chain/report/mr_to_rfq_tracker/mr_to_rfq_tracker.json`
+
+**Filters:** Project (Link), Material Request No (Link) — at least one required
+
+**Columns (18):**
+Project No, Project Name, MR No, Item Image, Item Code, Item Description, Qty, UOM, Item Group, Type of Material, Required Days, RFQ No, RFQ Status, RFQ Qty, Balance Qty, Supplier Code, RFQ-Supplier Name, Status
+
+**Key Custom Fields Used:**
+- Material Request: `custom_project_` (Link→Project), `custom_required_by_in_days` (Int)
+- Material Request Item: `custom_type_of_material` (Data), `project` (Link→Project)
+
+**Data Model & Query Logic:**
+- Main query: Material Request Item → JOIN Material Request, Project, Item
+- RFQ linkage: Request for Quotation Item.`material_request_item` = Material Request Item.`name`
+- Suppliers: Request for Quotation Supplier child table (per RFQ)
+- Includes both Draft and Submitted RFQs (`docstatus < 2`)
+
+**MR-Level Filtering Logic:**
+- Calculate balance_qty (MR qty - RFQ qty) for ALL items
+- Track which MRs have at least ONE pending item (balance > 0)
+- Show ALL items from MRs that have pending items (including completed ones)
+- Hide entire MR only when ALL items have balance ≤ 0
+- Balance can be negative (over-requested)
+
+**Status Values:** Pending (balance = full qty), Partial (0 < balance < qty), Complete (balance ≤ 0)
+
+**UI Features:**
+- Clickable RFQ links (open in new tab)
+- Clickable item images (enlarge on click)
+- Color-coded Status (Red=Pending, Orange=Partial, Green=Complete)
+- Color-coded Balance Qty (Red=positive/pending, Purple=negative/over-requested)
+- Grouped display (Project/MR columns collapse for consecutive duplicates)
+- Suppliers comma-separated (Frappe report cells don't support multi-line)
+
+### Report 2: RFQ to PO Tracker ✅
+
+**Files:**
+- `clevertech/supply_chain/report/rfq_to_po_tracker/rfq_to_po_tracker.py`
+- `clevertech/supply_chain/report/rfq_to_po_tracker/rfq_to_po_tracker.js`
+- `clevertech/supply_chain/report/rfq_to_po_tracker/rfq_to_po_tracker.json`
+
+**Filters:** Project (Link), RFQ No (Link) — at least one required
+
+**Columns (18):**
+Project, Project Name, RFQ No, Date, Item Code, Item Description, Qty, UOM, Required Days, Supplier Code, Supplier Name, Supplier Quotation Status, Supplier Quotation No, SQ Comparison Date, SQ Comparison No, SQ Comparison Status, PO Date, PO No
+
+**Side-by-Side Layout:**
+- Items (from RFQ Item child table) displayed on the LEFT columns
+- Suppliers (from RFQ Supplier child table) displayed on the RIGHT columns
+- Rows per RFQ = max(item count, supplier count)
+- If more items than suppliers → extra item rows have blank supplier columns
+- If more suppliers than items → extra supplier rows have blank item columns
+- PO data is per-item (shown on the item's row)
+- SQ Comparison data is per-RFQ (shown on first row only)
+
+**Data Model & Query Logic:**
+- Main query: RFQ Item → JOIN RFQ, LEFT JOIN Material Request (for project)
+- Project: `COALESCE(mr.custom_project_, rfq.custom_project)` — MR project preferred, RFQ fallback
+- Suppliers: RFQ Supplier child table (per RFQ, not per item)
+- SQ Status: Derived from actual Supplier Quotation documents (NOT from RFQ Supplier.quote_status which is unreliable for desk-created SQs)
+  - No SQ exists → "Pending" (red)
+  - SQ in Draft → "Draft" (orange) — supplier submitted via portal, under desk review
+  - SQ Submitted → "Submitted" (green)
+- SQ Numbers: Fetched via SQ Item.request_for_quotation → SQ header, grouped by (RFQ, Supplier)
+- SQ Comparison: Custom doctype `Supplier Quotation Comparison` linked via `request_for_quotation` field
+  - Workflow states: Draft → Pending L1-L4 Approval → Approved / Rejected
+- PO linkage chain: RFQ Item → SQ Item (request_for_quotation_item) → PO Item (supplier_quotation_item)
+
+**Filtering Logic:**
+- Only Submitted RFQs (docstatus=1)
+- Hide entire RFQ when ALL items have POs (all items fully ordered)
+- Show ALL items/suppliers from RFQs that have at least one item without a PO
+
+**UI Features:**
+- Clickable SQ No links (open in new tab)
+- Clickable SQ Comparison No links
+- Clickable PO No links (comma-separated, each clickable)
+- Color-coded SQ Status (Red=Pending, Orange=Draft, Green=Submitted)
+- Color-coded SQ Comparison Status (Green=Approved, Red=Rejected, Orange=pending approvals)
+- Grouped display (Project/RFQ No/Date columns collapse for consecutive duplicates)
+
+**Key Learning — RFQ Supplier.quote_status Unreliable:**
+The `quote_status` field on `Request for Quotation Supplier` only updates to "Received" via the portal flow (`create_supplier_quotation`). When SQs are created manually from the desk, `quote_status` stays "Pending". The report derives status from actual SQ document existence and docstatus instead.
+
+### RFQ Get Items Override [2026-02-15]
+
+**File:** `clevertech/supply_chain/server_scripts/rfq_get_items.py`
+
+**Purpose:** Filter out MR items that already have RFQs when using "Get Items From" on RFQ.
+
+**Overrides (via hooks.py `override_whitelisted_methods`):**
+1. `make_request_for_quotation` — "Get Items From" → "Material Request" button
+2. `get_item_from_material_requests_based_on_supplier` — "Get Items From" → "Possible Supplier" button
+
+**Logic:**
+- Excludes MR items already linked to non-cancelled RFQs (Draft or Submitted, docstatus < 2)
+- Shows orange message listing excluded items grouped by RFQ number and status
+- Prevents users from having to manually remove 50+ duplicate items when creating RFQs from large MRs
+
+**Key Fields:** `tabRequest for Quotation Item`.`material_request_item` links back to the specific MR Item row.
+
+### Report 3: PO to Delivery Tracker ✅
+
+**Files:**
+- `clevertech/supply_chain/report/po_to_delivery_tracker/po_to_delivery_tracker.py`
+- `clevertech/supply_chain/report/po_to_delivery_tracker/po_to_delivery_tracker.js`
+- `clevertech/supply_chain/report/po_to_delivery_tracker/po_to_delivery_tracker.json`
+
+**Filters:** Project (Link), PO No (Link→Purchase Order) — at least one required
+
+**Columns (15):**
+Project, PO No, Supplier Name, Date, Item Code, Item Description, Qty, UOM, Require Date, Delivery Overdue Days, Delivered Date, Purchase Receipt No, Receive Qty, Pending Qty, Status
+
+**Data Model & Query Logic:**
+- Main query: PO Item → JOIN PO (header-level project via `po.project`)
+- PR linkage: PR Item.`purchase_order_item` = PO Item.`name` (direct link, no intermediate chain)
+- Only submitted POs (docstatus=1) and submitted PRs (docstatus=1)
+- PR numbers comma-separated when multiple partial deliveries exist
+
+**Filtering Logic:**
+- Hide entire PO when ALL items are fully received (`received_qty >= qty` for every item)
+- Show ALL items from POs that have at least one pending/partial item (including complete ones)
+
+**Overdue Days Calculation:**
+- Not fully delivered: `today - schedule_date` (positive = overdue)
+- Fully delivered: `PR posting_date - schedule_date` (positive = late, negative = early)
+
+**Status Values:** Pending (no delivery), Partial (some received), Complete (fully received)
+
+**UI Features:**
+- Clickable Purchase Receipt No links (comma-separated, each clickable, open in new tab)
+- Color-coded Status (Red=Pending, Orange=Partial, Green=Complete)
+- Color-coded Overdue Days (Red=positive/overdue, Green=zero or negative/on-time)
+- Grouped display (Project/PO No/Supplier/Date columns collapse for consecutive duplicates)
+
+---
+
+**Document Version:** 3.15
 **Last Updated:** 2026-02-10
 **Authors:** Saket-TT & BharatBodh Team
+<<<<<<< HEAD
 **Status:** Phases 1–4H Complete ✅ (including Make/Buy flag, ALL items scope, three-layer validation MR+RFQ+PO, basic BOM version warning, cascade recalculation, tiered blocking during BOM Upload, BOM version history tracking, image upload enhancement, comprehensive summary, and dynamic column mapping with Excel format validation). Phase 5 Machine Code implementation complete ✅, BOM Hash Comparison RCA documented (fix pending), Component Master calculation issues fixed ✅ (frappe.db.set_value() approach, project_qty logic, cascade recalculation), BOM Usage bug fixes complete ✅ (version change cleanup, existing BOMs handling, duplicate item consolidation), Procurement records backfill feature complete ✅, BOM diff display in confirmation dialog complete ✅. **Phase 5G Multi-Level Make/Buy Cascade complete ✅** (total_qty_limit calculation fix, recursive recalculation with safety measures, user feedback and validation). **Decision 18: M-Code/G-Code Hierarchy Mapping complete ✅** (bom_usage hierarchy fields, _populate_hierarchy_codes in BOM upload, Project Tracking Report per-BOM-path rows with per-path procurement tracking). **BOM Version Change Bug Fix complete ✅** (recursion fix + hash-based existence check). **Impacted Parent BOMs & Stale BOM References complete ✅** (upload success dialog + Project Tracking report toggle). **M-Code/G-Code bom_usage fix complete ✅** (_refresh_bom_usage_hierarchy_codes). **Stale BOM CM usage column complete ✅**. **Upload dialog summary fix complete ✅** (version-change path + old_bom fallback). **CRITICAL: Cross-machine m_code/g_code contamination fix complete ✅** (machine_code filtering in hierarchy functions). **Fresh upload success dialog fix complete ✅** (explicit status assignment). **BOM Upload History Log complete ✅** (child table tracking file, machine, user, timestamp, stats per upload). **Procurement validation bug fixes complete ✅** (machine_code isolation, 0-vs-NULL handling, cross-machine qty filtering). **Success dialog empty stats deferred.** Phases 5 (Reports) and 6 (Testing) pending.
 <<<<<<< HEAD
 =======
+=======
+**Status:** Phases 1–4H Complete ✅ (including Make/Buy flag, ALL items scope, three-layer validation MR+RFQ+PO, basic BOM version warning, cascade recalculation, tiered blocking during BOM Upload, BOM version history tracking, image upload enhancement, comprehensive summary, and dynamic column mapping with Excel format validation). Phase 5 Machine Code implementation complete ✅, BOM Hash Comparison RCA documented (fix pending), Component Master calculation issues fixed ✅ (frappe.db.set_value() approach, project_qty logic, cascade recalculation), BOM Usage bug fixes complete ✅ (version change cleanup, existing BOMs handling, duplicate item consolidation), Procurement records backfill feature complete ✅, BOM diff display in confirmation dialog complete ✅. **Phase 5G Multi-Level Make/Buy Cascade complete ✅** (total_qty_limit calculation fix, recursive recalculation with safety measures, user feedback and validation). **Decision 18: M-Code/G-Code Hierarchy Mapping complete ✅** (bom_usage hierarchy fields, _populate_hierarchy_codes in BOM upload, Project Tracking Report per-BOM-path rows with per-path procurement tracking). **BOM Version Change Bug Fix complete ✅** (recursion fix + hash-based existence check). **Impacted Parent BOMs & Stale BOM References complete ✅** (upload success dialog + Project Tracking report toggle). **M-Code/G-Code bom_usage fix complete ✅** (_refresh_bom_usage_hierarchy_codes). **Stale BOM CM usage column complete ✅**. **Upload dialog summary fix complete ✅** (version-change path + old_bom fallback). **CRITICAL: Cross-machine m_code/g_code contamination fix complete ✅** (machine_code filtering in hierarchy functions). **Fresh upload success dialog fix complete ✅** (explicit status assignment). **BOM Upload History Log complete ✅** (child table tracking file, machine, user, timestamp, stats per upload). **Procurement validation bug fixes complete ✅** (machine_code isolation, 0-vs-NULL handling, cross-machine qty filtering). **Decision 19: G-Code State Filtering complete ✅** (filter_tree_by_g_code_state implementation documented). **Decision 20: G-Code Level Procurement Validation complete ✅** (MR/PO validation with G-code aggregate limits, testing pending). **Success dialog empty stats deferred.** Phases 5 (Reports) and 6 (Testing) pending.
+>>>>>>> 10c4d3a (message for bom-level-validation branch)
 
 ---
 
@@ -4379,4 +4923,258 @@ Analysis and design documented. Implementation pending user approval. Resolves d
   - `clevertech/clevertech/doctype/project_component_master/project_component_master.json`
 
 > *This entry was auto-generated by `context/update_context.py`.  Update the relevant topic file if design decisions changed.*
+<<<<<<< HEAD
 >>>>>>> 0bb072f (Add G-code validation docs and procurement bug fixes)
+=======
+
+---
+
+### Auto-changelog [2026-02-10 08:29 UTC] — `0bb072f`
+
+**Commit:** Add G-code validation docs and procurement bug fixes
+
+**Files changed and their context topics:**
+
+- **architectural_decisions.md**
+  - `clevertech/clevertech/doctype/bom_upload/bom_upload.py`
+  - `clevertech/clevertech/doctype/bom_upload/bom_upload_enhanced.py`
+  - `clevertech/project_component_master/material_request_validation.py`
+  - `clevertech/project_component_master/purchase_order_validation.py`
+- **current_system_and_issues.md**
+  - `clevertech/clevertech/doctype/bom_upload/bom_upload.py`
+- **implementation_status.md**
+  - `clevertech/clevertech/doctype/bom_upload/bom_upload.js`
+  - `clevertech/clevertech/doctype/bom_upload/bom_upload_enhanced.py`
+  - `clevertech/clevertech/doctype/project_component_master/project_component_master.json`
+  - `clevertech/clevertech/report/project_tracking/project_tracking.js`
+  - `clevertech/clevertech/report/project_tracking/project_tracking.py`
+  - `clevertech/hooks.py`
+  - `clevertech/project_component_master/material_request_validation.py`
+  - `clevertech/project_component_master/purchase_order_validation.py`
+- **simplified_design_and_calculations.md**
+  - `clevertech/clevertech/doctype/bom_upload/bom_upload_enhanced.py`
+  - `clevertech/clevertech/doctype/project_component_master/project_component_master.json`
+
+> *This entry was auto-generated by `context/update_context.py`.  Update the relevant topic file if design decisions changed.*
+
+---
+
+## 2026-02-28 — BOM Upload Fixes & Custom Field Improvements
+
+### 1. Item `custom_project` — Mandatory When Machine Code Checked
+
+**Files modified:** `clevertech/clevertech/custom/item.json`
+
+**Change:** Added `mandatory_depends_on` to the `custom_project` (Link→Project) custom field on the Item doctype:
+
+```json
+"mandatory_depends_on": "eval:doc.custom_is_machine_code"
+```
+
+**Effect:** When user checks `custom_is_machine_code` on an Item, `custom_project` becomes mandatory in the UI — Frappe enforces this client-side without any client script required.
+
+**Deployed:** `bench migrate` applied.
+
+---
+
+### 2. Cost Center `custom_project` — Auto-Fetch from Machine Code (Read-Only)
+
+**Files modified:** `clevertech/clevertech/custom/cost_center.json`
+
+**Background:** Cost Center has two custom fields:
+- `custom_machine_code` (Link→Item, filtered to `custom_is_machine_code=1`)
+- `custom_project` (Link→Project)
+
+Since Item already stores `custom_project`, the Cost Center's project should be derived from the selected machine code, not entered manually.
+
+**Change:** Added `fetch_from` and `read_only` to `custom_project` on Cost Center:
+
+```json
+"fetch_from": "custom_machine_code.custom_project",
+"fetch_if_empty": 0,
+"read_only": 1
+```
+
+**Effect:** When user selects a machine code on a Cost Center, project auto-populates and is read-only. To change the project, user must first change it on the Item (machine code record).
+
+**Pattern:** `fetch_from` + `read_only` = derived field — no client script or server script needed.
+
+**Deployed:** `bench migrate` applied.
+
+---
+
+### 3. BOM Upload Phase 1 — Cost Center Set in PCM
+
+**File modified:** `clevertech/clevertech/doctype/bom_upload/bom_upload_enhanced.py`
+**Function:** `create_component_masters_for_all_items`
+
+**Problem:** After BOM upload, the `cost_center` field in Project Component Masters was blank.
+
+**Root cause:** `create_component_masters_for_all_items` never looked up or passed `cost_center` when creating/updating PCMs.
+
+**Fix:** Added a single Cost Center lookup before the node loop (keyed by `machine_code`), then passed it into every `cm_data` dict:
+
+```python
+# Look up Cost Center linked to this machine_code (one query for all CMs)
+cost_center = frappe.db.get_value("Cost Center", {"custom_machine_code": machine_code}, "name")
+```
+
+```python
+"cost_center": cost_center,  # Linked via machine_code on Cost Center
+```
+
+**Deployed:** `bench restart` applied.
+
+---
+
+### 4. BOM Upload Phase 1 — Make/Buy Defaults to Blank for New CMs
+
+**File modified:** `clevertech/clevertech/doctype/bom_upload/bom_upload_enhanced.py`
+**Function:** `create_component_masters_for_all_items`
+
+**Problem:** `make_or_buy` was auto-assigned based on item code prefix (M/G → Make, others → Buy). This was opinionated and not always correct.
+
+**Decision:** Leave `make_or_buy` blank for new PCMs going forward. User sets manually. Existing records untouched (no retroactive DB reset).
+
+**Change:**
+
+```python
+# Before (both assembly and leaf):
+cm_data["make_or_buy"] = "Make" if item_code[0] in ("M", "G") else "Buy"
+
+# After:
+cm_data["make_or_buy"] = node.get("make_or_buy") or ""
+```
+
+If the Excel carries a `make_or_buy` column value it is used; otherwise blank.
+
+**Deployed:** `bench restart` applied (same file as fix #3 above).
+
+---
+
+### 5. BOM Upload Phase 1 — Excel Row 1 P/V Root Item Validation
+
+**File modified:** `clevertech/clevertech/doctype/bom_upload/bom_upload_phase1.py`
+**Function:** `create_boms_phase1`
+
+**Problem:** A user could select a valid machine code (P/V) in the BOM Upload form but upload a G-code BOM Excel file (root item starts with G). The screen-level machine code field was insufficient.
+
+**Fix:** After loading the workbook, scan row 1 across the first 20 columns for `"Item no:"`. Extract the item code and validate its prefix:
+
+```python
+root_item_code = None
+for col_num in range(1, 20):
+    col_letter = openpyxl.utils.get_column_letter(col_num)
+    cell_val = str(ws[f"{col_letter}1"].value or "")
+    if "Item no:" in cell_val:
+        root_item_code = cell_val.split("Item no:")[-1].strip()
+        break
+if root_item_code and not root_item_code.upper().startswith(("P", "V")):
+    frappe.throw(
+        _(f"Kindly upload Valid Machine Code BOM file. "
+          f"The Item should start with either P or V. Found: {root_item_code}"),
+        title=_("Invalid BOM File")
+    )
+```
+
+**Why row 1, not `doc.machine_code`:** Validates actual Excel content — user could select correct machine code on form but upload wrong file (G-code BOM).
+
+**Deployed:** `bench restart` applied.
+
+---
+
+### 6. BOM Version Change Warning — Softened from Throw to Msgprint
+
+**File modified:** `clevertech/project_component_master/bom_hooks.py`
+**Function:** `on_bom_validate`
+
+**Problem:** `frappe.throw` in `on_bom_validate` blocked BOM submission even after the user had already confirmed the version change in the Phase 1 JS dialog — effectively blocking the upload and showing the error twice.
+
+**Fix:**
+
+```python
+# Before:
+frappe.throw(error_msg, title=_("BOM Version Change Blocked"))
+
+# After:
+frappe.msgprint(error_msg, title=_("BOM Version Change — Impacted MRs"), indicator="orange")
+```
+
+**Effect:** MR list warning still shown as orange informational message. BOM submission no longer blocked. Phase 1 JS confirmation dialog remains the primary UX gate.
+
+**Deployed:** `bench restart` applied.
+
+---
+
+### 7. BOM Upload Phase 1 — E-Code Items Blocked (2026-02-28)
+
+**File modified:** `clevertech/clevertech/doctype/bom_upload/bom_upload_phase1.py`
+**Function:** `create_boms_phase1`
+
+**Problem:** E-code items (item codes starting with "E") are not valid in a Machine Code BOM. Users could inadvertently include them in the Excel file and the upload would process them.
+
+**Fix:** Added a hard block (Step 1b) immediately after the tree is built, before any G-code filtering, item creation, or DB changes:
+
+```python
+# Step 1b: Block if any E-code items are present in the tree
+e_code_nodes = [
+    node for node in _get_all_nodes(tree)
+    if node["item_code"].upper().startswith("E")
+]
+if e_code_nodes:
+    items_list = "<br>".join(
+        f"• <b>{n['item_code']}</b> — {n.get('description') or ''}"
+        for n in e_code_nodes
+    )
+    frappe.throw(
+        f"The following E-code items are not allowed in a Machine Code BOM.<br>"
+        f"Please delete them from the Excel file and re-upload:<br><br>"
+        f"{items_list}",
+        title=_("E-Code Items Found")
+    )
+```
+
+**Effect:** Upload is hard-blocked with a list of all E-code items (item code + description). User must remove them from the Excel and re-upload. No DB changes occur before this check.
+
+**Why placed here:** Fails fast — before G-code state filtering, state warnings, item creation, BOM creation, or anything else. Prevents partial processing of invalid files.
+
+**Deployed:** `bench restart` applied.
+
+---
+
+## 2026-02-28 — Budgeted Rate (Calculated) Smart Population
+
+**File modified:** `clevertech/clevertech/doctype/project_component_master/project_component_master.py`
+**Function:** `calculate_budgeted_rate_rollup` (called from `before_save`)
+
+**Problem:** `budgeted_rate_calculated` was always ₹0.00 on most PCMs:
+- Leaf items (no BOM): function returned early without setting anything
+- Assembly items: rollup iterated BOM items and read child PCM `budgeted_rate` (manually set field) — which is almost never filled in, so fell back to `last_purchase_rate` per child item, ignoring ERPNext's own BOM cost rollup
+
+**Fix:** Replaced the child-iteration loop with two direct DB reads:
+
+```python
+if self.has_bom and self.active_bom:
+    # ERPNext already rolls up RM costs bottom-up on BOM submit — just read it
+    self.budgeted_rate_calculated = (
+        frappe.db.get_value("BOM", self.active_bom, "total_cost") or 0
+    )
+else:
+    # Leaf item — derive from last purchase rate
+    self.budgeted_rate_calculated = (
+        frappe.db.get_value("Item", self.item_code, "last_purchase_rate") or 0
+    )
+```
+
+**Logic:**
+- **Assembly (has_bom=1, active_bom set):** reads `BOM.total_cost` — ERPNext computes this bottom-up across the entire component tree when the BOM is submitted. No need to re-implement the rollup.
+- **Leaf (no BOM):** reads `Item.last_purchase_rate` — populated automatically by ERPNext when a Purchase Receipt is submitted.
+
+**Why BOM.total_cost and not raw_material_cost:** `total_cost = raw_material_cost + operating_cost`. Since operating costs are not used (always 0), they are equal. `total_cost` is the more complete field.
+
+**Trigger:** `before_save` on PCM — fires on manual save and on every cascade recalculation triggered by BOM upload.
+
+**Retroactive refresh:** Existing PCMs will auto-refresh on next save or on next BOM upload (cascade recalculation touches all CMs in the project).
+
+**Deployed:** `bench restart` applied.
+>>>>>>> 10c4d3a (message for bom-level-validation branch)

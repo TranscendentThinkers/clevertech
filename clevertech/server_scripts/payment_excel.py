@@ -3,6 +3,7 @@ from openpyxl import load_workbook
 from frappe.utils import getdate
 import xlrd
 import os
+import re
 
 # =========================================================
 # GLOBAL ERROR COLLECTOR
@@ -28,6 +29,19 @@ def find_supplier_fuzzy(name):
         if normalize_name(s.supplier_name) == norm:
             return s.name
     return None
+
+def parse_amount(val):
+    """Parse numeric or string amounts like '11246.00 Cr' → 11246.0"""
+    if val is None:
+        return 0
+    if isinstance(val, (int, float)):
+        return float(val)
+    # Strip text like ' Cr', ' Dr' and commas
+    cleaned = re.sub(r'[^\d.]', '', str(val).replace(",", ""))
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0
 
 # =========================================================
 # MAIN API
@@ -63,6 +77,17 @@ def upload_payment_excel(file_url):
     PAID_TO_ACCOUNT = "Creditors - CT"  # payable
 
     # =========================================================
+    # COLUMN INDICES — adjusted to match actual Excel layout:
+    # Col 0: Date | Col 1: Particulars | Col 4: Vch Type
+    # Col 5: Vch No. | Col 6: Debit Amount | Col 7: Credit Amount
+    # =========================================================
+    COL_DATE        = 0
+    COL_PARTICULARS = 1
+    COL_VCH_NO      = 5
+    COL_DEBIT       = 6
+    COL_CREDIT      = 7
+
+    # =========================================================
     # PROCESSING
     # =========================================================
     created = 0
@@ -73,9 +98,8 @@ def upload_payment_excel(file_url):
         if not current_doc:
             return
 
-        # validation
         if not current_doc.get("party"):
-            GLOBAL_ERRORS["missing_suppliers"].add(current_doc.get("party_name"))
+            GLOBAL_ERRORS["missing_suppliers"].add(current_doc.get("party_name", ""))
             return
 
         if current_doc.get("paid_amount", 0) <= 0:
@@ -111,19 +135,22 @@ def upload_payment_excel(file_url):
         pe.insert(ignore_permissions=True)
         created += 1
 
-    # -------- PROCESS SOURCE (START FROM ROW 8) --------
+    # -------- PROCESS SOURCE (START FROM ROW 8, index 7) --------
     for idx, r in enumerate(rows[7:], start=8):
         try:
-            date_val = r[0]  # Date
-            particulars = r[1]  # Particulars
-            ref_val = r[2]  # Check/Ref
-            voucher_no = r[7]  # Vch No
-            debit = r[8] or 0  # Debit
-            credit = r[9] or 0  # Credit
+            # Guard: skip rows that don't have enough columns
+            if len(r) < 8:
+                continue
+
+            date_val    = r[COL_DATE]
+            particulars = r[COL_PARTICULARS]
+            voucher_no  = r[COL_VCH_NO]
+            debit       = parse_amount(r[COL_DEBIT])
+            credit      = parse_amount(r[COL_CREDIT])
 
             text = str(particulars).strip() if particulars else ""
 
-            # -------- New Payment Voucher --------
+            # -------- New Payment Voucher (row has a date) --------
             if date_val:
                 flush_payment()
                 current_doc = {
@@ -148,37 +175,25 @@ def upload_payment_excel(file_url):
             if not current_doc:
                 continue
 
-            # -------- Reference number --------
-            if ref_val and not current_doc["reference_no"]:
-                current_doc["reference_no"] = str(ref_val).strip()
-
             # -------- CREDIT → Bank/Cash (Paid From) --------
             if credit and text:
                 acc = frappe.db.get_value("Account", {"account_name": text}, "name")
                 if acc:
                     current_doc["paid_from"] = acc
-                    current_doc["paid_amount"] = float(credit)
+                    current_doc["paid_amount"] = credit
                 else:
                     GLOBAL_ERRORS["missing_accounts"].add(text)
 
             # -------- DEBIT → Alternative amount detection --------
             elif debit and current_doc["paid_amount"] == 0:
-                current_doc["paid_amount"] = float(debit)
+                current_doc["paid_amount"] = debit
 
-            # -------- REMARKS LOGIC (ONLY TRUE REMARKS) --------
-            # Rule:
-            # 1. No date
-            # 2. No debit
-            # 3. No credit
-            # 4. Not supplier line
-            # 5. Not bank/account line
-            # 6. Not reference/helper lines like 'Agst Ref'
-            # 7. Only business narration like: 'Being NEFT-XXXX', 'Being IMPS-XXXX', 'Flight Ticket...', etc
+            # -------- REMARKS LOGIC --------
             if text and not date_val and not debit and not credit:
                 low = text.lower()
 
                 # exclude supplier row
-                if normalize_name(text) == normalize_name(current_doc.get("party_name")):
+                if normalize_name(text) == normalize_name(current_doc.get("party_name", "")):
                     continue
 
                 # exclude bank/account row
@@ -197,21 +212,21 @@ def upload_payment_excel(file_url):
                 INCLUDE_KEYWORDS = [
                     "being", "neft", "imps", "rtgs", "upi", "cms",
                     "flight", "ticket", "pnr", "booking", "travel",
-                    "payment", "transfer"
+                    "payment", "transfer", "air india", "indigo", "spicejet"
                 ]
                 if not any(k in low for k in INCLUDE_KEYWORDS):
                     continue
 
                 # valid remark
                 if current_doc["remarks"]:
-                    current_doc["remarks"] += " "
+                    current_doc["remarks"] += " | "
                 current_doc["remarks"] += text
 
         except Exception as e:
             GLOBAL_ERRORS["format_errors"].append(f"Row {idx}: {str(e)}")
             continue
 
-    # flush last
+    # flush last record
     flush_payment()
 
     # =========================================================
@@ -242,5 +257,3 @@ def upload_payment_excel(file_url):
         frappe.throw(msg)
 
     return f"✅ {created} Payment Entries created successfully in Draft status"
-
-

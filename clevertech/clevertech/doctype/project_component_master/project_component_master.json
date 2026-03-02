@@ -1,5 +1,6 @@
 {
  "actions": [],
+ "allow_import": 1,
  "autoname": "format:PCM-{project}-{######}",
  "creation": "2026-01-26 18:16:49.102718",
  "doctype": "DocType",
@@ -316,13 +317,13 @@
    "read_only": 1
   },
   {
-   "default": "Draft",
+   "default": "In Creation",
    "fieldname": "design_status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Design Status",
-   "options": "\nDraft\nDesign Released\nProcurement Ready\nObsolete"
+   "options": "\nIn Creation\nReleased\nObsolete"
   },
   {
    "description": "Hash of BOM structure for change detection",
@@ -393,25 +394,28 @@
   },
   {
    "fieldname": "machine_code",
-   "fieldtype": "Data",
+   "fieldtype": "Link",
    "in_filter": 1,
    "in_global_search": 1,
    "in_list_view": 1,
    "in_preview": 1,
    "in_standard_filter": 1,
-   "label": "Machine Code"
+   "label": "Machine Code",
+   "options": "Item"
   },
   {
    "description": "Root assembly code (item starting with M) - for items without bom_usage",
    "fieldname": "m_code",
-   "fieldtype": "Data",
-   "label": "M-Code"
+   "fieldtype": "Link",
+   "label": "M-Code",
+   "options": "Item"
   },
   {
    "description": "Sub-assembly code (item starting with G) - for items without bom_usage or single-parent",
    "fieldname": "g_code",
-   "fieldtype": "Data",
-   "label": "G-Code"
+   "fieldtype": "Link",
+   "label": "G-Code",
+   "options": "Item"
   },
   {
    "fieldname": "cost_center",
@@ -423,7 +427,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-02-09 10:16:58.624796",
+ "modified": "2026-02-27 20:09:01.843795",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Project Component Master",
@@ -471,6 +475,18 @@
    "read": 1,
    "report": 1,
    "role": "Component Master Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
    "share": 1,
    "write": 1
   }

@@ -57,13 +57,13 @@ def before_validate(doc, method):
 
 def before_submit(doc, method):
     if doc.custom_bulk_quality_inspection_for_grn:
-        if frappe.db.get_value("Bulk Quality Inspection", doc.custom_bulk_quality_inspection_for_grn, "docstatus") != 1:
-            frappe.throw(f"Submit the Bulk Quality Inspection: {doc.custom_bulk_quality_inspection_for_grn}, before submitting the Purchase Receipt")
+        if frappe.db.get_value("Quality Clearance", doc.custom_bulk_quality_inspection_for_grn, "docstatus") != 1:
+            frappe.throw(f"Submit the Quality Clearance: {doc.custom_bulk_quality_inspection_for_grn}, before submitting the Purchase Receipt")
 
 
 @frappe.whitelist()
 def get_items_from_bulk_quality_inspection(bqi_doc):
-    doc = frappe.get_doc("Bulk Quality Inspection", bqi_doc)
+    doc = frappe.get_doc("Quality Clearance", bqi_doc)
     qty_map = {}
     settings = frappe.get_cached_doc("Quality Warehouse Settings")
     qc_accepted = settings.qc_accepted_warehouse or doc.set_warehouse
@@ -98,10 +98,10 @@ def get_items_from_bulk_quality_inspection(bqi_doc):
 
 @frappe.whitelist()
 def submit_bqi(bqi_doc, pr_name):
-    bqi = frappe.get_doc("Bulk Quality Inspection", bqi_doc)
+    bqi = frappe.get_doc("Quality Clearance", bqi_doc)
     if bqi.docstatus == 0:
         bqi.grn_name = pr_name
         bqi.submit()
-        return {"success": True, "message": "BQI Document Submitted"}
+        return {"success": True, "message": "Quality Clearance Document Submitted"}
     else:
-        return {"success": True, "message": "BQI Already Submitted"}
+        return {"success": True, "message": "Quality Clearance Already Submitted"}

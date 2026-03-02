@@ -43,13 +43,24 @@ def validate_purchase_order_qty(doc, method=None):
                 )
             machine_code = cost_center_to_machine[item.cost_center]
 
-        _validate_item_qty(project, item.item_code, item.qty, doc.name, machine_code)
+        # Decision 20 (2026-02-10): Get bom_no from source MR item if available
+        bom_no = None
+        if item.material_request_item:
+            bom_no = frappe.db.get_value(
+                "Material Request Item", item.material_request_item, "bom_no"
+            )
+
+        _validate_item_qty(project, item.item_code, item.qty, doc.name, machine_code, bom_no)
 
 
-def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None):
+def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None, bom_no=None):
     """
     Validate individual item quantity against Component Master limit.
     Only enforces for "Buy" items — "Make" items are not directly procured.
+
+    Decision 20 (2026-02-10): G-code level validation
+    - If PO item traces back to MR with bom_no, validate against G-code aggregate limit
+    - Otherwise, validate against CM-level total_qty_limit
 
     Args:
         project: Project name
@@ -57,6 +68,7 @@ def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None):
         po_qty: Ordered quantity in this PO
         po_name: PO document name (excluded from existing qty calculation)
         machine_code: Machine code for filtering (Bug Fix 2026-02-09)
+        bom_no: BOM reference (traced from source MR item) (Decision 20)
     """
     # Bug Fix 2026-02-09: Add machine_code filter to prevent cross-machine CM collision
     # When item exists in multiple machines, pick the correct CM for this machine
@@ -78,13 +90,51 @@ def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None):
     if not component:
         return  # Item not in Component Master, no restriction (old projects)
 
-    # Only validate "Buy" items — "Make" items are assembled in-house
-    if component.make_or_buy and component.make_or_buy != "Buy":
-        return  # Make items are not directly procured, skip validation
+    # Block "Make" items — they are assembled in-house, not procured
+    if component.make_or_buy == "Make":
+        frappe.throw(
+            _(
+                "Cannot add {0} to Purchase Order.<br><br>"
+                "<b>Item is marked as 'Make' in Project Component Master</b><br><br>"
+                "'Make' items are assembled in-house from their child components. "
+                "Only the child parts (marked as 'Buy') should be procured.<br><br>"
+                "<small><i class='fa fa-info-circle'></i> "
+                "If this item should be purchased, update Make/Buy flag in "
+                "<a href='/app/project-component-master/{1}'>{1}</a></small>"
+            ).format(
+                frappe.bold(item_code),
+                component.name,
+            ),
+            title=_("Cannot Procure 'Make' Item"),
+        )
 
     # Bug Fix 2026-02-09: Removed total_qty_limit early return check
     # Both 0 and NULL should block procurement (0 = parent is Buy, NULL = not calculated)
     # Only items without Component Master (old projects) skip validation
+
+    # Decision 20 (2026-02-10): G-code level validation
+    # If PO traces back to MR with bom_no, validate against G-code-specific limit
+    qty_limit = component.total_qty_limit or 0
+    validation_context = "overall limit"
+
+    if bom_no:
+        # Extract G-code from BOM's item field
+        g_code_item = frappe.db.get_value("BOM", bom_no, "item")
+
+        if g_code_item:
+            # Load Component Master with bom_usage child table
+            cm_doc = frappe.get_doc("Project Component Master", component.name)
+
+            # Sum total_qty_required for all bom_usage rows matching this G-code
+            g_code_limit = sum(
+                row.total_qty_required or 0
+                for row in cm_doc.bom_usage
+                if row.g_code == g_code_item
+            )
+
+            if g_code_limit > 0:
+                qty_limit = g_code_limit
+                validation_context = f"G-code {g_code_item}"
 
     # Get existing PO quantities (exclude current PO if updating)
     # Bug Fix 2026-02-09: Filter by machine_code to prevent cross-machine contamination
@@ -120,8 +170,6 @@ def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None):
         )[0][0] or 0
 
     total_procurement = existing_po_qty + po_qty
-    # Handle NULL total_qty_limit (treat as 0)
-    qty_limit = component.total_qty_limit or 0
     max_allowed = max(0, qty_limit - existing_po_qty)
 
     # Hard limit check
@@ -129,7 +177,7 @@ def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None):
         frappe.throw(
             _(
                 "Cannot add {0} units of {1} to Purchase Order.<br><br>"
-                "<b>Procurement Limit Exceeded:</b><br>"
+                "<b>Procurement Limit Exceeded ({8}):</b><br>"
                 "<table class='table table-bordered' style='width:auto;margin-top:10px'>"
                 "<tr><td>Total Limit:</td><td style='text-align:right'><b>{2}</b></td></tr>"
                 "<tr><td>Existing POs:</td><td style='text-align:right'>{3}</td></tr>"
@@ -149,6 +197,7 @@ def _validate_item_qty(project, item_code, po_qty, po_name, machine_code=None):
                 total_procurement,
                 max_allowed,
                 component.name,
+                validation_context,
             ),
             title=_("Procurement Limit Exceeded"),
         )

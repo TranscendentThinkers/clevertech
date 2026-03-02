@@ -53,6 +53,64 @@ from clevertech.project_component_master.bulk_generation import (
 )
 
 
+# ==================== State → design_status Mapping ====================
+
+# Only three valid STATE values in the Excel (case-insensitive).
+# Blank STATE is treated conservatively as "In Creation".
+_STATE_TO_DESIGN_STATUS = {
+    "released":    "Released",
+    "in creation": "In Creation",
+    "obsolete":    "Obsolete",
+}
+
+
+def _map_state_to_design_status(state):
+    """Return a valid Project Component Master design_status for an Excel STATE value.
+
+    Case-insensitive. Blank or unrecognised value → 'In Creation' (conservative).
+    """
+    if not state or not str(state).strip():
+        return "In Creation"
+    return _STATE_TO_DESIGN_STATUS.get(str(state).strip().lower(), "In Creation")
+
+
+def collect_state_warnings(tree):
+    """
+    Scan the filtered tree (after G-code filter) for items with notable states.
+    Used in Phase 1 to produce non-blocking warnings before upload proceeds.
+
+    Returns:
+        dict:
+          "obsolete" — items whose STATE is "Obsolete"
+          "other"    — items whose STATE is not "Released" and not blank
+    """
+    warnings = {"obsolete": [], "other": []}
+
+    def _scan(nodes):
+        for node in nodes:
+            item_code = node.get("item_code", "")
+            raw_state = str(node.get("state") or "").strip()
+            normalised = raw_state.lower()
+
+            if normalised == "obsolete":
+                warnings["obsolete"].append({
+                    "item_code": item_code,
+                    "description": node.get("description") or "",
+                })
+            elif normalised and normalised != "released":
+                warnings["other"].append({
+                    "item_code": item_code,
+                    "description": node.get("description") or "",
+                    "state": raw_state,
+                })
+
+            if node.get("children"):
+                _scan(node["children"])
+
+    _scan(tree)
+    return warnings
+
+
 # ==================== Dynamic Column Mapping (Phase 4H) ====================
 
 def map_excel_columns(ws):
@@ -476,6 +534,9 @@ def create_component_masters_for_all_items(tree, project, machine_code):
     counters = {"created": 0, "existing": 0, "updated": 0, "failed": 0}
     all_nodes = _get_all_nodes(tree)
 
+    # Look up Cost Center linked to this machine_code (one query for all CMs)
+    cost_center = frappe.db.get_value("Cost Center", {"custom_machine_code": machine_code}, "name")
+
     for node in all_nodes:
         item_code = node["item_code"]
         is_assembly = bool(node.get("children"))
@@ -512,13 +573,8 @@ def create_component_masters_for_all_items(tree, project, machine_code):
             level = node.get("level", 0)
             project_qty = node.get("qty", 0) if level == 1 else 0
 
-            # Map STATE to design_status (from Excel column J)
-            # If STATE exists, use it. Otherwise default to "Design Released"
-            state = node.get("state")
-            if state and str(state).strip():
-                design_status = str(state).strip().title()  # Capitalize properly (e.g., "RELEASED" → "Released")
-            else:
-                design_status = "Design Released"
+            # Map STATE to design_status (case-insensitive; blank → "In Creation")
+            design_status = _map_state_to_design_status(node.get("state"))
 
             cm_data = {
                 "doctype": "Project Component Master",
@@ -531,27 +587,18 @@ def create_component_masters_for_all_items(tree, project, machine_code):
                 "project_qty": project_qty,  # From Excel column E (root assembly only)
                 "created_from": "BOM Upload",
                 "released_for_procurement": released_for_procurement,
+                "cost_center": cost_center,  # Linked via machine_code on Cost Center
             }
 
-            # Determine Make/Buy based on item code prefix
-            # Items starting with M or G: "Make" (assemblies/sub-assemblies)
-            # All other items: "Buy" (raw materials/purchased components)
-            item_code_upper = str(item_code).upper()
-            if item_code_upper.startswith(("M", "G")):
-                default_make_or_buy = "Make"
-            else:
-                default_make_or_buy = "Buy"
-
+            # Make/Buy: use Excel value if present, otherwise leave blank for user to set manually
             if is_assembly:
                 cm_data["has_bom"] = 1
                 cm_data["active_bom"] = None  # Set later after BOM creation
                 cm_data["bom_structure_hash"] = calculate_tree_structure_hash(node["children"])
-                # Excel value takes precedence, otherwise use prefix-based default
-                cm_data["make_or_buy"] = node.get("make_or_buy") or default_make_or_buy
+                cm_data["make_or_buy"] = node.get("make_or_buy") or ""
             else:
-                # Leaf item (raw material) - use prefix-based default
                 cm_data["has_bom"] = 0
-                cm_data["make_or_buy"] = node.get("make_or_buy") or default_make_or_buy
+                cm_data["make_or_buy"] = node.get("make_or_buy") or ""
 
             cm = frappe.get_doc(cm_data)
             cm.flags.ignore_validate = True

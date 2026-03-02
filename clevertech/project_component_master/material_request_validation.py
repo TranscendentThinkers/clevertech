@@ -34,13 +34,17 @@ def validate_material_request_qty(doc, method=None):
         )
 
     for item in doc.items:
-        _validate_item_qty(project, item.item_code, item.qty, doc.name, machine_code)
+        _validate_item_qty(project, item.item_code, item.qty, doc.name, machine_code, item.get("bom_no"))
 
 
-def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
+def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None, bom_no=None):
     """
     Validate individual item quantity against Component Master limit.
     Only enforces for "Buy" items — "Make" items are not directly procured.
+
+    Decision 20 (2026-02-10): G-code level validation
+    - If MR item has bom_no (from "Get Items from BOM"), validate against G-code aggregate limit
+    - Otherwise, validate against CM-level total_qty_limit
 
     Args:
         project: Project name
@@ -48,6 +52,7 @@ def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
         mr_qty: Requested quantity in this MR
         mr_name: MR document name (excluded from existing qty calculation)
         machine_code: Machine code for filtering (Bug Fix 2026-02-09)
+        bom_no: BOM reference (from "Get Items from BOM" button) (Decision 20)
     """
     # Bug Fix 2026-02-09: Add machine_code filter to prevent cross-machine CM collision
     # When item exists in multiple machines, pick the correct CM for this machine
@@ -61,7 +66,7 @@ def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
         [
             "name", "total_qty_limit", "total_qty_procured",
             "is_loose_item", "loose_qty_required", "bom_qty_required",
-            "bom_conversion_status", "make_or_buy",
+            "bom_conversion_status", "make_or_buy", "design_status",
         ],
         as_dict=True,
     )
@@ -87,9 +92,52 @@ def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
             title=_("Cannot Procure 'Make' Item"),
         )
 
+    # Block items whose design is not yet Released
+    if component.design_status and component.design_status != "Released":
+        frappe.throw(
+            _(
+                "Cannot add {0} to Material Request.<br><br>"
+                "<b>Design Status is '{1}'</b> — only items with Design Status "
+                "<b>'Released'</b> can be procured.<br><br>"
+                "<small><i class='fa fa-info-circle'></i> "
+                "Update Design Status in Component Master "
+                "<a href='/app/project-component-master/{2}' target='_blank'><b>{2}</b></a> "
+                "once the design is finalised.</small>"
+            ).format(
+                frappe.bold(item_code),
+                component.design_status,
+                component.name,
+            ),
+            title=_("Design Not Released"),
+        )
+
     # Bug Fix 2026-02-09: Removed total_qty_limit early return check
     # Both 0 and NULL should block procurement (0 = parent is Buy, NULL = not calculated)
     # Only items without Component Master (old projects) skip validation
+
+    # Decision 20 (2026-02-10): G-code level validation
+    # If MR has bom_no (from "Get Items from BOM"), validate against G-code-specific limit
+    qty_limit = component.total_qty_limit or 0
+    validation_context = "overall limit"
+
+    if bom_no:
+        # Extract G-code from BOM's item field
+        g_code_item = frappe.db.get_value("BOM", bom_no, "item")
+
+        if g_code_item:
+            # Load Component Master with bom_usage child table
+            cm_doc = frappe.get_doc("Project Component Master", component.name)
+
+            # Sum total_qty_required for all bom_usage rows matching this G-code
+            g_code_limit = sum(
+                row.total_qty_required or 0
+                for row in cm_doc.bom_usage
+                if row.g_code == g_code_item
+            )
+
+            if g_code_limit > 0:
+                qty_limit = g_code_limit
+                validation_context = f"G-code {g_code_item}"
 
     # Get existing MR quantities (exclude current MR if updating)
     # Bug Fix 2026-02-09: Filter by machine_code to prevent cross-machine contamination
@@ -125,8 +173,6 @@ def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
         )[0][0] or 0
 
     total_procurement = existing_mr_qty + mr_qty
-    # Handle NULL total_qty_limit (treat as 0)
-    qty_limit = component.total_qty_limit or 0
     max_allowed = max(0, qty_limit - existing_mr_qty)
 
     # Hard limit check
@@ -134,7 +180,7 @@ def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
         frappe.throw(
             _(
                 "Cannot add {0} units of {1} to Material Request.<br><br>"
-                "<b>Procurement Limit Exceeded:</b><br>"
+                "<b>Procurement Limit Exceeded ({8}):</b><br>"
                 "<table class='table table-bordered' style='width:auto;margin-top:10px'>"
                 "<tr><td>Total Limit:</td><td style='text-align:right'><b>{2}</b></td></tr>"
                 "<tr><td>Existing MRs:</td><td style='text-align:right'>{3}</td></tr>"
@@ -154,6 +200,7 @@ def _validate_item_qty(project, item_code, mr_qty, mr_name, machine_code=None):
                 total_procurement,
                 max_allowed,
                 component.name,
+                validation_context,
             ),
             title=_("Procurement Limit Exceeded"),
         )

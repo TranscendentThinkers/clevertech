@@ -70,6 +70,10 @@ public/js/project.js:
 public/js/material_request.js:
   - implementation_status.md            # Phase 4J – custom_procurement_bom population
 
+# ─── Supply Chain / Portal overrides ────────────────────────────────────────
+supply_chain/server_scripts/rfq_portal.py:
+  - implementation_status.md            # RFQ portal – zero out price-list rates
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 hooks.py:
-  - implementation_status.md            # Phase 4A (hook registration), 4C, 4D, 4I
+  - implementation_status.md            # Phase 4A (hook registration), 4C, 4D, 4I, RFQ portal override
