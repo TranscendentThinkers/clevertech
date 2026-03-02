@@ -160,3 +160,50 @@ def validate(doc,method):
                 frappe.ValidationError
         )
 
+@frappe.whitelist()
+def set_default_warehouses_from_item_defaults(doc, method=None):
+    """
+    For each item row in Material Request, fetch the item's
+    default_warehouse from the Item Defaults child table and
+    set it in the warehouse field of the child row.
+
+    Priority:
+      1. Match by doc.company first
+      2. Fall back to first available default_warehouse
+    """
+    if not doc.items:
+        return
+
+    for row in doc.items:
+        if not row.item_code:
+            continue
+
+        # Fetch item_defaults child table for this item
+        item_defaults = frappe.get_all(
+            "Item Default",                     # Child DocType name
+            filters={"parent": row.item_code},  # Filter by item_code
+            fields=["company", "default_warehouse"]
+        )
+
+        if not item_defaults:
+            continue
+
+        default_warehouse = None
+
+        # Priority 1: Match by company on the Material Request
+        if doc.company:
+            for d in item_defaults:
+                if d.company == doc.company and d.default_warehouse:
+                    default_warehouse = d.default_warehouse
+                    break
+
+        # Priority 2: First available default_warehouse across any company
+        if not default_warehouse:
+            for d in item_defaults:
+                if d.default_warehouse:
+                    default_warehouse = d.default_warehouse
+                    break
+
+        # Apply the warehouse to the row
+        if default_warehouse:
+            row.warehouse = default_warehouse

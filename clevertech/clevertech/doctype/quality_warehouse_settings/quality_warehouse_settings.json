@@ -38,7 +38,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-11-19 19:11:01.759043",
+ "modified": "2026-02-23 23:12:56.885387",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Quality Warehouse Settings",
@@ -51,6 +51,16 @@
    "print": 1,
    "read": 1,
    "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Stock Manager",
    "share": 1,
    "write": 1
   }

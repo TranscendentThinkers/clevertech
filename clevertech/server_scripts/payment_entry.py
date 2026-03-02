@@ -1,5 +1,6 @@
 import frappe
 import pandas as pd
+from frappe.utils import getdate
 
 
 @frappe.whitelist()
@@ -11,7 +12,7 @@ def import_receipt_excel(file_url):
 
     df = pd.read_excel(file_path)
 
-    receipts = []  # store valid rows for second pass
+    receipts = []
 
     # 🔴 GLOBAL ERROR COLLECTORS
     missing_customers = set()
@@ -21,49 +22,59 @@ def import_receipt_excel(file_url):
     current_receipt = None
 
     # ======================================================
-    # 🔍 PASS 1 → ONLY VALIDATION (NO CREATION)
+    # 🔍 PASS 1 → VALIDATION ONLY
     # ======================================================
     for idx, row in df.iterrows():
 
-        # safe column access
-        date = row.iloc[0] if len(row) > 0 else None
-        particulars = row.iloc[1] if len(row) > 1 else None
-        ref_value = row.iloc[2] if len(row) > 2 else None
-        credit = row.iloc[9] if len(row) > 9 else None
+        date = row.get("Date")
+        particulars = row.get("Particulars")
+        ref_value = row.get("Unnamed: 2")
+        credit = row.get("Credit")
 
+        # -------------------------------
         # 1️⃣ MAIN RECEIPT ROW
+        # -------------------------------
         if pd.notna(date) and pd.notna(credit):
 
             current_receipt = {
-                "date": date,
-                "customer_name": str(particulars).strip(),
-                "amount": credit,
+                "date": getdate(date),
+                "customer_name": str(particulars).strip() if pd.notna(particulars) else None,
+                "amount": float(credit),
                 "bank": None,
                 "remarks": "",
                 "reference_no": None,
-                "reference_date": date
+                "reference_date": getdate(date)
             }
             continue
 
         if not current_receipt:
             continue
 
+        # -------------------------------
         # 2️⃣ REFERENCE ROW
+        # -------------------------------
         if isinstance(particulars, str) and particulars.strip().lower() == "new ref":
             if pd.notna(ref_value):
                 current_receipt["reference_no"] = str(ref_value).strip()
             continue
 
+        # -------------------------------
         # 3️⃣ BANK ROW
+        # -------------------------------
         if isinstance(particulars, str) and "bank" in particulars.lower():
             current_receipt["bank"] = particulars.strip()
             continue
 
-        # 4️⃣ REMARKS ROW → FINALIZE ONE RECEIPT
-        if isinstance(particulars, str) and len(particulars.strip()) > 10:
+        # -------------------------------
+        # 4️⃣ REMARKS ROW → FINALIZE
+        # -------------------------------
+        if isinstance(particulars, str) and len(particulars.strip()) > 5:
+
             current_receipt["remarks"] = particulars.strip()
 
-            # ---------------- VALIDATIONS ----------------
+            # -------- VALIDATIONS --------
+
+            # Customer validation
             customer = frappe.db.get_value(
                 "Customer",
                 {"customer_name": current_receipt["customer_name"]},
@@ -72,13 +83,15 @@ def import_receipt_excel(file_url):
             if not customer:
                 missing_customers.add(current_receipt["customer_name"])
 
+            # Reference validation
             if not current_receipt["reference_no"]:
                 missing_reference.add(current_receipt["customer_name"])
 
+            # Bank account validation
             if current_receipt["bank"]:
-                account = f"{current_receipt['bank']} - CT"
-                if not frappe.db.exists("Account", account):
-                    missing_accounts.add(account)
+                account_name = f"{current_receipt['bank']} - CT"
+                if not frappe.db.exists("Account", account_name):
+                    missing_accounts.add(account_name)
             else:
                 missing_accounts.add("Bank not identified")
 
@@ -86,11 +99,11 @@ def import_receipt_excel(file_url):
             current_receipt = None
 
     # ======================================================
-    # ❌ STOP IF ANY ERROR FOUND
+    # ❌ STOP IF ERRORS FOUND
     # ======================================================
     if missing_customers or missing_accounts or missing_reference:
 
-        msg = "<b>❌ Receipt Excel Validation Failed</b><br><br>"
+        msg = "<b>❌ PAYMENT EXCEL VALIDATION FAILED</b><br><br>"
 
         if missing_customers:
             msg += "<b>Missing Customers:</b><br>"
@@ -103,7 +116,7 @@ def import_receipt_excel(file_url):
                 msg += f"- {a}<br>"
 
         if missing_reference:
-            msg += "<br><b>Missing Reference No for Customers:</b><br>"
+            msg += "<br><b>Missing Reference No:</b><br>"
             for r in sorted(missing_reference):
                 msg += f"- {r}<br>"
 
@@ -129,7 +142,7 @@ def import_receipt_excel(file_url):
 
 
 # ======================================================
-# CREATE PAYMENT ENTRY (CLEAN & SAFE)
+# ✅ CREATE PAYMENT ENTRY
 # ======================================================
 def create_payment_entry(data):
 

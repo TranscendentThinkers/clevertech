@@ -75,17 +75,18 @@
    "options": "Supplier Quotation Comparison File"
   },
   {
+   "default": "Today",
    "fieldname": "date",
    "fieldtype": "Date",
    "label": "Date",
+   "read_only": 1,
    "reqd": 1
   },
   {
    "fieldname": "created_by",
    "fieldtype": "Link",
    "label": "Created By",
-   "options": "User",
-   "reqd": 1
+   "options": "User"
   },
   {
    "fieldname": "column_break_anqr",
@@ -141,8 +142,7 @@
   {
    "fieldname": "required_by_in_days",
    "fieldtype": "Int",
-   "label": "Required By In Days",
-   "reqd": 1
+   "label": "Required By In Days"
   },
   {
    "fieldname": "section_break_gwew",
@@ -162,7 +162,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-02-09 16:21:19.882337",
+ "modified": "2026-02-17 13:02:49.293873",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",

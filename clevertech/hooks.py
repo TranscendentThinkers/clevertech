@@ -90,6 +90,7 @@ doc_events = {
             ],
             "on_submit": "clevertech.project_component_master.procurement_hooks.on_mr_submit",
             "on_cancel": "clevertech.project_component_master.procurement_hooks.on_mr_cancel",
+            "before_save": "clevertech.server_scripts.material_request.set_default_warehouses_from_item_defaults"
         },
         "BOM": {
             "before_insert": "clevertech.design.server_scripts.bom.before_insert",
@@ -109,7 +110,7 @@ doc_events = {
         },
         "Supplier Quotation": {
             "validate":"clevertech.supply_chain.server_scripts.supplier_quotation.validate",
-            "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
+          #  "before_submit":"clevertech.supply_chain.server_scripts.supplier_quotation.before_submit",
         },
         "Sales Invoice": {
             "before_validate": "clevertech.server_scripts.sales_invoice.before_validate",
@@ -250,10 +251,12 @@ doctype_js = {
 
 # Overriding Methods
 # ------------------------------
-#
-# override_whitelisted_methods = {
-# 	"frappe.desk.doctype.event.event.get_events": "clevertech.event.get_events"
-# }
+
+override_whitelisted_methods = {
+	"erpnext.buying.doctype.request_for_quotation.request_for_quotation.create_supplier_quotation": "clevertech.supply_chain.server_scripts.rfq_portal.create_supplier_quotation",
+	"erpnext.stock.doctype.material_request.material_request.make_request_for_quotation": "clevertech.supply_chain.server_scripts.rfq_get_items.make_request_for_quotation",
+	"erpnext.buying.doctype.request_for_quotation.request_for_quotation.get_item_from_material_requests_based_on_supplier": "clevertech.supply_chain.server_scripts.rfq_get_items.get_item_from_material_requests_based_on_supplier"
+}
 #
 # each overriding function accepts a `data` argument;
 # generated from the base implementation of the doctype dashboard,

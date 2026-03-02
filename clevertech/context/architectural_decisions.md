@@ -508,6 +508,29 @@ Maximum allowed for this MR: 50
 
 Gives user actionable information to fix.
 
+**Make/Buy Enforcement at MR & PO Level (2026-02-11):**
+
+Both MR and PO validation hard-block "Make" items. The system uses two complementary guards:
+
+| Guard | What it blocks | How |
+|-------|---------------|-----|
+| Make/Buy flag | Assemblies (M, G, D-Make) | `make_or_buy == "Make"` → `frappe.throw()` |
+| total_qty_limit = 0 | RMs under Buy parent | Qty check: `total > 0` exceeds limit of 0 |
+
+Together these cover every procurement scenario without needing parent-chain traversal:
+
+| Item | make_or_buy | total_qty_limit | MR/PO allowed? | Reason |
+|------|-------------|-----------------|----------------|--------|
+| M-code (machine) | Make | any | NO | Make block |
+| G-code (assembly) | Make | any | NO | Make block |
+| D-code (Buy) | Buy | > 0 | YES | Buy with limit |
+| D-code (Make) | Make | any | NO | Make block |
+| RM under D (Buy parent) | Buy | 0 | NO | Zero limit |
+| RM under D (Make parent) | Buy | > 0 | YES | Limit from BOM explosion |
+| RM directly under G | Buy | > 0 | YES | Limit from BOM explosion |
+
+Files: `material_request_validation.py` (line 78), `purchase_order_validation.py` (line 93)
+
 ---
 
 ### Decision 10: BOM Versioning - Use ERPNext Native
@@ -931,7 +954,157 @@ else:
 - Depends on Decision 18 (M-Code/G-Code Hierarchy Mapping) for g_code field
 - Resolves deferred "Bug 3: BOM-Level Validation Gap" from 2026-02-09 fixes
 
-**Status:** 📋 Design complete (2026-02-10), implementation pending approval
+**Status:** ✅ Implemented (2026-02-10) in `material_request_validation.py` and `purchase_order_validation.py`
+
+---
+
+### Decision 21: Topological Sort for CM Recalculation
+
+**Problem:** `recalculate_component_masters_for_project()` processed Component Masters in arbitrary order (alphabetical by name). When Make/Buy changes cascade through a BOM hierarchy, child CMs were often processed BEFORE their parent CMs. This caused children to read stale `total_qty_limit` values (often 0) from parents, resulting in incorrect quantity calculations throughout the hierarchy.
+
+**Example of the bug:**
+```
+1. Upload BOM: Machine M → G-code G → D-code D → Raw Material RM
+2. Initial state: D is "Buy" → RM has total_qty_limit=0 (parent covers procurement)
+3. User changes D to "Make" → triggers recalculation
+4. BUG: If RM processed before D:
+   - RM reads D's total_qty_limit (still 0 - not recalculated yet)
+   - RM stays at 0 (incorrect)
+5. Correct: Process D first, THEN RM:
+   - D recalculates: total_qty_limit = 100
+   - RM reads D's total_qty_limit = 100
+   - RM correctly calculates: total_qty_limit = 100
+```
+
+**Decision:**
+Implement **topological sorting** using Kahn's algorithm to ensure parent CMs are always processed before their children in the dependency graph.
+
+**Technical implementation:**
+```python
+def _get_cms_in_topological_order(project):
+    """Return CM names in topological order (parents before children)."""
+    # 1. Build item_code → cm_name mapping
+    cms = frappe.get_all("Project Component Master",
+                        filters={"project": project},
+                        fields=["name", "item_code"])
+    item_to_cm = {cm["item_code"]: cm["name"] for cm in cms}
+
+    # 2. Build dependency graph from bom_usage (child depends on parent)
+    dependencies = {cm["name"]: set() for cm in cms}
+    in_degree = {cm["name"]: 0 for cm in cms}
+
+    bom_usages = frappe.db.sql("""
+        SELECT parent AS child_cm, parent_item
+        FROM `tabComponent BOM Usage`
+        WHERE parent IN %(cm_names)s
+    """, {"cm_names": list(cm_names)}, as_dict=True)
+
+    for usage in bom_usages:
+        child_cm = usage["child_cm"]
+        parent_cm = item_to_cm.get(usage["parent_item"])
+        if parent_cm and parent_cm in cm_names:
+            dependencies[child_cm].add(parent_cm)
+            in_degree[child_cm] += 1
+
+    # 3. Kahn's algorithm: process nodes with in_degree=0 first
+    queue = [cm for cm in cm_names if in_degree[cm] == 0]
+    result = []
+
+    while queue:
+        queue.sort()  # Deterministic ordering
+        current = queue.pop(0)
+        result.append(current)
+
+        for dependent in cm_names:
+            if current in dependencies[dependent]:
+                dependencies[dependent].remove(current)
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+    return result
+```
+
+**Why Kahn's algorithm:**
+- ✅ Natural fit for dependency resolution (process nodes with no dependencies first)
+- ✅ Handles cycles gracefully (returns partial order, logs remaining nodes)
+- ✅ O(V + E) complexity - efficient for typical BOM hierarchies (V < 1000, E < 5000)
+- ✅ Deterministic (sorted queue prevents random ordering)
+
+**Benefits:**
+- ✅ Fixes cascade recalculation bugs throughout the system
+- ✅ Guarantees correct quantity calculations regardless of CM creation order
+- ✅ Safe for production - no data loss, only ordering change
+- ✅ Works with arbitrary BOM depths and multiple parents per item
+
+**Trade-offs:**
+- ⚠️ Slightly slower than simple alphabetical sort (negligible - milliseconds for 1000 CMs)
+- ⚠️ Adds complexity to recalculation logic (well-documented, tested)
+
+**Files modified:**
+- `project_component_master/bom_hooks.py` lines 1202-1306
+
+**Status:** ✅ Implemented and tested (2026-02-11)
+
+---
+
+### Decision 22: Machine Code vs Item Code Separation
+
+**Problem:** Tests and potentially production code confused `machine_code` (a separate identifier for machine isolation) with `item_code` (the actual machine assembly item code). This caused CM lookups to fail or return incorrect CMs when the same item existed in multiple machines.
+
+**Example of confusion:**
+```
+WRONG:
+  MACHINE_1_CODE = "MT4000084237"  # This is an item_code, not a machine_code!
+
+CORRECT:
+  MACHINE_1_CODE = "VT0000000001"  # Actual machine identifier
+  MACHINE_1_ITEM = "MT4000084237"  # Item code for the machine assembly
+```
+
+**Decision:**
+Clarify and enforce the separation:
+- **`machine_code`**: A unique identifier for a physical machine/production line (e.g., "VT0000000001", "P00000000023")
+  - Used for CM isolation (filtering)
+  - Stored on Cost Center and Component Master
+  - Format: [V|P|etc.]T + 10 digits
+
+- **`item_code`**: The ERPNext Item code for any component, including machines (e.g., "MT4000084237")
+  - Used for Item/BOM lookups
+  - Appears in BOM hierarchies
+  - Format: [M|G|D|A|etc.]T + 10 digits
+
+**Why this matters:**
+1. **CM Isolation**: When same item (e.g., "AT0000012345") exists in multiple machines, we need `machine_code` to filter the correct CM
+2. **Cost Center Linkage**: Material Requests link to Cost Center → derive `machine_code` → filter CMs correctly
+3. **BOM Upload**: BOM upload receives `machine_code` as parameter, stamps all CMs with it
+
+**Pattern for CM lookups:**
+```python
+# ALWAYS include machine_code filter when available
+filters = {"project": project, "item_code": item_code}
+if machine_code:
+    filters["machine_code"] = machine_code
+
+cm = frappe.db.get_value("Project Component Master", filters, ["field1", "field2"], as_dict=True)
+```
+
+**Files where this pattern is critical:**
+- `project_component_master.py` (4 methods fixed with machine_code filters)
+- `material_request_validation.py` (derives machine_code from Cost Center)
+- `purchase_order_validation.py` (derives machine_code from Cost Center)
+- `bom_upload_enhanced.py` (receives machine_code as parameter)
+
+**Benefits:**
+- ✅ Prevents cross-machine CM contamination
+- ✅ Enables same item in multiple machines with independent quantity limits
+- ✅ Clear conceptual model (machine identity vs. item identity)
+
+**Trade-offs:**
+- ⚠️ Requires discipline - developers must remember machine_code filtering pattern
+- ⚠️ Legacy code may lack machine_code (fallback to project-only filter acceptable for single-machine projects)
+
+**Status:** ✅ Clarified and enforced (2026-02-11), 4 methods fixed in project_component_master.py
 
 ---
 

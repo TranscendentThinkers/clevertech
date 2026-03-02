@@ -7,15 +7,23 @@
  "engine": "InnoDB",
  "field_order": [
   "item_code",
+  "column_break_flkb",
   "item_name",
-  "qty_to_inspect",
+  "section_break_nzmg",
+  "po_qty",
   "accepted_qty",
+  "column_break_xdyv",
+  "qty_to_inspect",
   "rejected_qty",
-  "reason",
-  "quality_inspection_id",
-  "type_of_issue",
+  "stock_section",
   "accepted_stock_entry",
-  "rejected_stock_entry"
+  "column_break_zecb",
+  "rejected_stock_entry",
+  "quality_section",
+  "type_of_issue",
+  "reason",
+  "column_break_reqa",
+  "quality_inspection_id"
  ],
  "fields": [
   {
@@ -23,14 +31,15 @@
    "fieldtype": "Link",
    "in_list_view": 1,
    "label": "Item Code",
-   "options": "Item"
+   "options": "Item",
+   "read_only": 1
   },
   {
-   "fetch_from": "item_code.item_name",
    "fieldname": "item_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Item Name"
+   "label": "Item Name",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -62,6 +71,7 @@
   {
    "fieldname": "quality_inspection_id",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Quality Inspection ID",
    "options": "Quality Inspection",
    "read_only": 1
@@ -69,27 +79,68 @@
   {
    "fieldname": "type_of_issue",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Type of Issue",
    "options": "\nDesign\nSupplier\nOther"
   },
   {
    "fieldname": "accepted_stock_entry",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Accepted Stock Entry",
    "options": "Stock Entry"
   },
   {
    "fieldname": "rejected_stock_entry",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Rejected Stock Entry",
    "options": "Stock Entry"
+  },
+  {
+   "fieldname": "po_qty",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "PO Qty",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_flkb",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "section_break_nzmg",
+   "fieldtype": "Section Break",
+   "label": "Quantity"
+  },
+  {
+   "fieldname": "column_break_xdyv",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "stock_section",
+   "fieldtype": "Section Break",
+   "label": "Stock"
+  },
+  {
+   "fieldname": "column_break_zecb",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "quality_section",
+   "fieldtype": "Section Break",
+   "label": "Quality"
+  },
+  {
+   "fieldname": "column_break_reqa",
+   "fieldtype": "Column Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-01-14 11:07:10.536082",
+ "modified": "2026-02-20 16:43:31.088451",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "GRN Item",

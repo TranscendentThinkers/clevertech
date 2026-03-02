@@ -20,8 +20,16 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
         if (frm.fields_dict.comparison_report) {
             frm.fields_dict.comparison_report.$wrapper.empty();
         }
-        
+
         set_supplier_filter(frm);
+    },
+
+    required_by_in_days: function(frm) {
+        // Calculate required_by_date in real-time when required_by_in_days changes
+        if (frm.doc.required_by_in_days && frm.doc.required_by_in_days > 0) {
+            let required_by_date = frappe.datetime.add_days(frappe.datetime.get_today(), frm.doc.required_by_in_days);
+            frm.set_value('required_by_date', required_by_date);
+        }
     },
 
     fetch_report: function(frm) {
@@ -87,7 +95,7 @@ function set_supplier_filter(frm) {
         callback: function(r) {
             if (r.message && r.message.suppliers) {
                 let supplier_list = r.message.suppliers.map(s => s.supplier);
-                
+
                 frm.fields_dict.supplier_selection_table.grid.get_field('supplier').get_query = function(doc, cdt, cdn) {
                     return {
                         filters: {
@@ -95,7 +103,7 @@ function set_supplier_filter(frm) {
                         }
                     };
                 };
-                
+
                 frm.fields_dict.supplier_selection_table.grid.refresh();
             }
         }
@@ -105,7 +113,7 @@ function set_supplier_filter(frm) {
 frappe.ui.form.on("Supplier Selection Item", {
     supplier: function(frm, cdt, cdn) {
         let row = locals[cdt][cdn];
-        
+
         if (row.suggested_supplier && row.supplier) {
             if (row.suggested_supplier.trim() !== row.supplier.trim()) {
                 frappe.show_alert({
@@ -114,7 +122,7 @@ frappe.ui.form.on("Supplier Selection Item", {
                 }, 5);
             }
         }
-        
+
         fetch_supplier_data(frm, cdt, cdn);
     },
     item_code: function(frm, cdt, cdn) {
@@ -158,6 +166,8 @@ function fetch_supplier_data(frm, cdt, cdn) {
                     frappe.model.set_value(cdt, cdn, "qty", r.message.qty || 0);
                     frappe.model.set_value(cdt, cdn, "amount", r.message.amount || 0);
                     frappe.model.set_value(cdt, cdn, "total_tax", r.message.total_tax || 0);
+                    frappe.model.set_value(cdt, cdn, "delivery_term", r.message.delivery_term || "");
+                    frappe.model.set_value(cdt, cdn, "payment_terms_template", r.message.payment_terms_template || "");
 
                     calculate_grand_total(frm);
                 } else {
@@ -303,7 +313,6 @@ function generate_comparison_report(frm) {
     const $wrapper = frm.fields_dict.comparison_report.$wrapper;
     $wrapper.empty();
     $wrapper.html("<p>Loading comparison...</p>");
-
     frappe.call({
         method: "clevertech.clevertech.doctype.supplier_quotation_comparison.supplier_quotation_comparison.get_comparison_report_data",
         args: {
@@ -317,7 +326,6 @@ function generate_comparison_report(frm) {
                 $wrapper.html("<p>No data available</p>");
                 return;
             }
-
             frappe.call({
                 method: 'frappe.client.get',
                 args: {
@@ -330,20 +338,16 @@ function generate_comparison_report(frm) {
                             frm.doc.supplier_selection_table = r.message.supplier_selection_table;
                             frm.fields_dict.supplier_selection_table.grid.refresh();
                         }
-
                         if (r.message.comparison_table) {
                             frm.doc.comparison_table = r.message.comparison_table;
                             render_comparison_from_table(frm);
                         }
-
                         calculate_grand_total(frm);
-
-                        frm.save().then(() => {
-                            frappe.show_alert({
-                                message: __('Comparison report generated and saved successfully'),
-                                indicator: 'green'
-                            }, 3);
-                        });
+                        frm.reload_doc();
+                        frappe.show_alert({
+                            message: __('Comparison report generated and saved successfully'),
+                            indicator: 'green'
+                        }, 3);
                     }
                 }
             });

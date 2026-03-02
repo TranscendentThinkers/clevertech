@@ -33,9 +33,14 @@ class ProjectComponentMaster(Document):
 		# Check all parents' Make/Buy status
 		parent_statuses = []
 		for usage in self.bom_usage:
+			# Bug Fix 2026-02-11: Add machine_code filter to prevent cross-machine CM contamination
+			filters = {"project": self.project, "item_code": usage.parent_item}
+			if self.machine_code:
+				filters["machine_code"] = self.machine_code
+
 			parent = frappe.db.get_value(
 				"Project Component Master",
-				{"project": self.project, "item_code": usage.parent_item},
+				filters,
 				["make_or_buy", "name"],
 				as_dict=True
 			)
@@ -133,10 +138,15 @@ class ProjectComponentMaster(Document):
 		# Has BOM usage rows — calculate from all parent BOMs where parent is "Make"
 		total = 0
 		for usage in self.bom_usage:
+			# Bug Fix 2026-02-11: Add machine_code filter to prevent cross-machine CM contamination
+			filters = {"project": self.project, "item_code": usage.parent_item}
+			if self.machine_code:
+				filters["machine_code"] = self.machine_code
+
 			# Get parent's total quantity limit and make/buy flag
 			parent = frappe.db.get_value(
 				"Project Component Master",
-				{"project": self.project, "item_code": usage.parent_item},
+				filters,
 				["total_qty_limit", "make_or_buy"],
 				as_dict=True
 			)
@@ -203,9 +213,14 @@ class ProjectComponentMaster(Document):
 
 		# Update bom_usage and recalculate for each child
 		for item_code, total_qty in item_quantities.items():
+			# Bug Fix 2026-02-11: Add machine_code filter to prevent cross-machine CM contamination
+			filters = {"project": self.project, "item_code": item_code}
+			if self.machine_code:
+				filters["machine_code"] = self.machine_code
+
 			child_cm_name = frappe.db.get_value(
 				"Project Component Master",
-				{"project": self.project, "item_code": item_code},
+				filters,
 				"name"
 			)
 			if child_cm_name:
@@ -292,31 +307,20 @@ class ProjectComponentMaster(Document):
 			self.procurement_status = "In Progress"
 
 	def calculate_budgeted_rate_rollup(self):
-		"""Roll up budgets from child components."""
-		if not self.has_bom or not self.active_bom:
-			return
-
-		try:
-			bom = frappe.get_doc("BOM", self.active_bom)
-		except frappe.DoesNotExistError:
-			return
-
-		total = 0
-		for item in bom.items:
-			child_budget = frappe.db.get_value(
-				"Project Component Master",
-				{"project": self.project, "item_code": item.item_code},
-				"budgeted_rate"
+		"""
+		Populate budgeted_rate_calculated:
+		- Assembly items (has_bom): read total_cost from the active BOM
+		  (ERPNext already rolls up RM costs bottom-up on BOM submit)
+		- Leaf items (no BOM): read last_purchase_rate from Item master
+		"""
+		if self.has_bom and self.active_bom:
+			self.budgeted_rate_calculated = (
+				frappe.db.get_value("BOM", self.active_bom, "total_cost") or 0
 			)
-			if child_budget:
-				total += child_budget * item.qty
-			else:
-				last_rate = frappe.db.get_value(
-					"Item", item.item_code, "last_purchase_rate"
-				) or 0
-				total += last_rate * item.qty
-
-		self.budgeted_rate_calculated = total
+		else:
+			self.budgeted_rate_calculated = (
+				frappe.db.get_value("Item", self.item_code, "last_purchase_rate") or 0
+			)
 
 	def update_bom_conversion_status(self):
 		"""Update conversion status for loose items."""

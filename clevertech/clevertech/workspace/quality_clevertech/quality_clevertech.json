@@ -1,0 +1,77 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"tnRLAy-41y\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Quality-CleverTech</span>\",\"col\":12}},{\"id\":\"txbjDfYaWY\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Quality Clearance\",\"col\":3}},{\"id\":\"1Y2XT_gcVa\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Reports</b></span>\",\"col\":12}},{\"id\":\"XyRWlBr3LD\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Quality Status\",\"col\":3}},{\"id\":\"JddIw34SVw\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Quality Analysis\",\"col\":3}},{\"id\":\"VnhBR0WTnm\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Supplier Quality Performance\",\"col\":3}},{\"id\":\"-pZPv2yCjf\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Purchase Order Quality Report\",\"col\":3}},{\"id\":\"P5jNpDZkcf\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"QC Pending -GRN\",\"col\":3}}]",
+ "creation": "2026-02-27 15:52:52.390249",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "idx": 0,
+ "indicator_color": "green",
+ "is_hidden": 0,
+ "label": "Quality-CleverTech",
+ "links": [],
+ "modified": "2026-02-27 16:28:47.427808",
+ "modified_by": "Administrator",
+ "module": "Clevertech",
+ "name": "Quality-CleverTech",
+ "number_cards": [],
+ "owner": "support@transcendent.co.in",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 39.0,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Quality Clearance",
+   "link_to": "Quality Clearance",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "QC Pending -GRN",
+   "link_to": "QCPending-GRN",
+   "report_ref_doctype": "Purchase Receipt",
+   "type": "Report"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Quality Status",
+   "link_to": "Quality Status",
+   "report_ref_doctype": "Quality Inspection",
+   "type": "Report"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Quality Analysis",
+   "link_to": "Quality Analysis",
+   "report_ref_doctype": "Quality Inspection",
+   "type": "Report"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Supplier Quality Performance",
+   "link_to": "Supplier quality performance",
+   "report_ref_doctype": "Quality Inspection",
+   "type": "Report"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Purchase Order Quality Report",
+   "link_to": "Purchase Order Quality Report",
+   "report_ref_doctype": "Purchase Order",
+   "type": "Report"
+  }
+ ],
+ "title": "Quality-CleverTech"
+}
