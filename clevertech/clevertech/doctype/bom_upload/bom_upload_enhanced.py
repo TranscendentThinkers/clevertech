@@ -590,15 +590,25 @@ def create_component_masters_for_all_items(tree, project, machine_code):
                 "cost_center": cost_center,  # Linked via machine_code on Cost Center
             }
 
-            # Make/Buy: use Excel value if present, otherwise leave blank for user to set manually
+            # Make/Buy defaults by item code prefix:
+            # M, G codes → Make (assemblies/sub-assemblies manufactured in-house)
+            # D codes    → blank (user sets manually, can be Make or Buy)
+            # All others → Buy (raw materials / purchased components)
+            if item_code_upper.startswith(("M", "G")):
+                default_make_or_buy = "Make"
+            elif item_code_upper.startswith("D"):
+                default_make_or_buy = ""
+            else:
+                default_make_or_buy = "Buy"
+
             if is_assembly:
                 cm_data["has_bom"] = 1
                 cm_data["active_bom"] = None  # Set later after BOM creation
                 cm_data["bom_structure_hash"] = calculate_tree_structure_hash(node["children"])
-                cm_data["make_or_buy"] = node.get("make_or_buy") or ""
+                cm_data["make_or_buy"] = node.get("make_or_buy") or default_make_or_buy
             else:
                 cm_data["has_bom"] = 0
-                cm_data["make_or_buy"] = node.get("make_or_buy") or ""
+                cm_data["make_or_buy"] = node.get("make_or_buy") or default_make_or_buy
 
             cm = frappe.get_doc(cm_data)
             cm.flags.ignore_validate = True
@@ -772,9 +782,22 @@ def analyze_upload(tree, project, machine_code):
         data["details"] = details
         categorized[status].append(item_code)
 
+    # Also check leaf nodes for loose item blocking.
+    # Leaf nodes are not in the graph (no BOM created for them) but if marked
+    # as loose with can_be_converted_to_bom=0, they must block their parent assembly.
+    assembly_codes = set(graph.keys())
+    leaf_loose_blocked = []
+    for node in _get_all_nodes(tree):
+        item_code = node["item_code"]
+        if item_code in assembly_codes:
+            continue  # Already checked above
+        status, details = _determine_component_status(item_code, node, project, machine_code)
+        if status == "loose_blocked":
+            leaf_loose_blocked.append({"item_code": item_code, "node": node, "details": details})
+
     # Find blocking dependencies (ancestor chain)
     changed_set = set(categorized["changed"])
-    loose_blocked_set = set(categorized["loose_blocked"])
+    loose_blocked_set = set(categorized["loose_blocked"]) | {n["item_code"] for n in leaf_loose_blocked}
     blocked_by_changes = _find_blocked_ancestors(
         graph, changed_set, loose_blocked_set
     )
@@ -786,17 +809,18 @@ def analyze_upload(tree, project, machine_code):
         if item_code not in blocked_set:
             can_create.append(graph[item_code]["node"])
 
+    all_loose_blocked = [graph[ic] for ic in categorized["loose_blocked"]] + leaf_loose_blocked
     return {
         "can_create": can_create,
         "changed_components": [graph[ic] for ic in categorized["changed"]],
-        "loose_blocked": [graph[ic] for ic in categorized["loose_blocked"]],
+        "loose_blocked": all_loose_blocked,
         "blocked_by_dependencies": blocked_by_changes,
         "summary": {
             "total": len(all_assemblies),
             "new": len(categorized["new"]),
             "unchanged": len(categorized["unchanged"]),
             "changed": len(categorized["changed"]),
-            "loose_blocked": len(categorized["loose_blocked"]),
+            "loose_blocked": len(all_loose_blocked),
             "can_create": len(can_create),
             "blocked": len(blocked_by_changes),
         },

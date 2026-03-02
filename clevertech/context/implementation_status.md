@@ -181,8 +181,8 @@ Phase 1 ships the core value immediately using the same building blocks.
 - Item creation & update (`ensure_items_for_all_nodes` → `ensure_item_exists`)
 - BOM creation & update (`create_bom_recursive`) — hash-based: skip if unchanged, new version if changed
 - G-code STATE filtering — skip non-released G-codes + entire subtree
-- Component Master creation with Make/Buy prefix logic (M/G=Make, rest=Buy)
-- Loose item check — block if PCM has `is_loose_item=1` AND `can_be_converted_to_bom=0`
+- Component Master creation with Make/Buy prefix logic (M/G=Make, D=blank, rest=Buy)
+- Loose item check — block if PCM has `is_loose_item=1` AND `can_be_converted_to_bom=0` (checks both assembly nodes and leaf nodes; loose leaf blocks its parent assembly's BOM creation)
 - Post-BOM: `_link_boms_to_component_masters`, `_populate_hierarchy_codes`, `_refresh_bom_usage_hierarchy_codes`, `recalculate_component_masters_for_project`
 - `upload_history` child table on BOM Upload form (audit log)
 
@@ -455,7 +455,7 @@ Document saved as Draft → approval workflow starts → final submit
 - **BOM Upload make/buy merge:** Excel value wins if present, else keep existing value
   - `_merge_make_or_buy()` function handles merge logic
   - PE2 team only tags new items or changes; previously tagged items left blank
-  - Defaults: assemblies=Make, raw materials=Buy
+  - Defaults: M/G codes=Make, D codes=blank (user sets manually), all others=Buy
 - **Updated calculations:**
   - `calculate_bom_qty_required()` now checks parent's `make_or_buy`
   - Only counts parents where make_or_buy="Make" (Buy parents cover their children)
@@ -5027,28 +5027,31 @@ cost_center = frappe.db.get_value("Cost Center", {"custom_machine_code": machine
 
 ---
 
-### 4. BOM Upload Phase 1 — Make/Buy Defaults to Blank for New CMs
+### 4. BOM Upload — Make/Buy Defaults by Item Code Prefix
 
 **File modified:** `clevertech/clevertech/doctype/bom_upload/bom_upload_enhanced.py`
 **Function:** `create_component_masters_for_all_items`
 
-**Problem:** `make_or_buy` was auto-assigned based on item code prefix (M/G → Make, others → Buy). This was opinionated and not always correct.
-
-**Decision:** Leave `make_or_buy` blank for new PCMs going forward. User sets manually. Existing records untouched (no retroactive DB reset).
+**Current Logic:**
+- M, G codes → `Make` (assemblies/sub-assemblies manufactured in-house)
+- D codes → blank (user sets manually, can be Make or Buy)
+- All others (RM etc.) → `Buy` (purchased components)
 
 **Change:**
 
 ```python
-# Before (both assembly and leaf):
-cm_data["make_or_buy"] = "Make" if item_code[0] in ("M", "G") else "Buy"
+# Prefix-based defaults (D codes kept blank for manual user assignment)
+if item_code_upper.startswith(("M", "G")):
+    default_make_or_buy = "Make"
+elif item_code_upper.startswith("D"):
+    default_make_or_buy = ""
+else:
+    default_make_or_buy = "Buy"
 
-# After:
-cm_data["make_or_buy"] = node.get("make_or_buy") or ""
+cm_data["make_or_buy"] = node.get("make_or_buy") or default_make_or_buy
 ```
 
-If the Excel carries a `make_or_buy` column value it is used; otherwise blank.
-
-**Deployed:** `bench restart` applied (same file as fix #3 above).
+**History:** Was initially prefix-based (M/G=Make, rest=Buy), then changed to all-blank, then revised to current logic (D codes blank, rest by prefix).
 
 ---
 

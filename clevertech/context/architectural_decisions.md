@@ -37,10 +37,10 @@
 **v1.9: ALL Items in BOM Tree (CURRENT DESIGN)**
 ```
 Project Component Master contains:
-✓ Root assemblies (M level) — has_bom=1, make_or_buy=Make
-✓ Sub-assemblies (G level) — has_bom=1, make_or_buy=Make
-✓ Sub-assemblies (D level) — has_bom=1, make_or_buy=Make OR Buy
-✓ Raw materials (RM level) — has_bom=0, make_or_buy=Buy
+✓ Root assemblies (M level) — has_bom=1, make_or_buy=Make (default)
+✓ Sub-assemblies (G level) — has_bom=1, make_or_buy=Make (default)
+✓ Sub-assemblies (D level) — has_bom=1, make_or_buy=blank (user sets manually, can be Make or Buy)
+✓ Raw materials (RM level) — has_bom=0, make_or_buy=Buy (default)
 ✓ Loose raw materials — is_loose_item=1
 ```
 
