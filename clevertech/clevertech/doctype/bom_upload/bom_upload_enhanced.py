@@ -1439,6 +1439,26 @@ def _proceed_with_confirmed_changes(doc, confirmed_items):
         # Either new, confirmed, or needs BOM
         can_create.append(node)
 
+    # Check leaf nodes for loose item blocking before creating BOMs.
+    # This mirrors the check in analyze_upload but runs again here because
+    # _proceed_with_confirmed_changes bypasses analyze_upload entirely.
+    assembly_codes = set(node["item_code"] for node in all_assemblies)
+    leaf_loose_blocked = []
+    for node in _get_all_nodes(tree):
+        item_code = node["item_code"]
+        if item_code in assembly_codes:
+            continue
+        status, details = _determine_component_status(item_code, node, project, machine_code)
+        if status == "loose_blocked":
+            leaf_loose_blocked.append({"item_code": item_code, "node": node, "details": details})
+
+    if leaf_loose_blocked:
+        blocked_items = ", ".join(n["item_code"] for n in leaf_loose_blocked)
+        frappe.throw(
+            _("Cannot create BOM — the following loose items do not have 'Can be Converted to BOM' enabled: <b>{0}</b>").format(blocked_items),
+            title=_("Loose Item Blocking BOM Creation")
+        )
+
     # Create BOMs
     analysis = {
         "can_create": can_create,

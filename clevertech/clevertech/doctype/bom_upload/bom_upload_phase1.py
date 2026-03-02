@@ -240,8 +240,9 @@ def create_boms_phase1(docname, confirmed=False, state_confirmed=False):
 
 def _check_loose_items(tree, project, machine_code):
     """
-    Check all assembly nodes for existing PCMs marked as loose items
-    without can_be_converted_to_bom enabled.
+    Check all nodes (assemblies + leaf items) for existing PCMs marked as
+    loose items without can_be_converted_to_bom enabled.
+    A loose leaf item blocks its parent assembly's BOM creation.
 
     Returns:
         list of blocked item codes
@@ -249,9 +250,6 @@ def _check_loose_items(tree, project, machine_code):
     blocked = []
 
     for node in _get_all_nodes(tree):
-        if not node.get("children"):
-            continue  # Only assemblies can block on loose item flag
-
         result = frappe.db.get_value(
             "Project Component Master",
             {

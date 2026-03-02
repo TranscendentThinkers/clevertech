@@ -183,6 +183,9 @@ Phase 1 ships the core value immediately using the same building blocks.
 - G-code STATE filtering — skip non-released G-codes + entire subtree
 - Component Master creation with Make/Buy prefix logic (M/G=Make, D=blank, rest=Buy)
 - Loose item check — block if PCM has `is_loose_item=1` AND `can_be_converted_to_bom=0` (checks both assembly nodes and leaf nodes; loose leaf blocks its parent assembly's BOM creation)
+  - **Bug fixed (2026-03-02):** Original check in `bom_upload_phase1._check_loose_items` skipped leaf nodes (`continue` if no children) — fixed by removing the skip
+  - **Bug fixed (2026-03-02):** `bom_upload_enhanced._proceed_with_confirmed_changes` (second API call after user confirms BOM version change) had no loose check at all — fixed by adding leaf node check before BOM creation
+  - `bom_upload_enhanced.analyze_upload` extended to check leaf nodes and add them to `loose_blocked_set` so `_find_blocked_ancestors` correctly blocks parent assemblies
 - Post-BOM: `_link_boms_to_component_masters`, `_populate_hierarchy_codes`, `_refresh_bom_usage_hierarchy_codes`, `recalculate_component_masters_for_project`
 - `upload_history` child table on BOM Upload form (audit log)
 
@@ -350,7 +353,7 @@ broke SQ creation from the portal (supplier doesn't set tax template)
 - Full analysis engine: parse Excel → create Items → create Component Masters → analyze → create BOMs → link back
 - Hash-based change detection categorizes components as new/unchanged/changed/blocked
 - Ancestor chain blocking — changed child blocks all parent assemblies
-- Loose item blocking — items without `can_be_converted_to_bom` block upload
+- Loose item blocking — items without `can_be_converted_to_bom` block upload (assemblies AND leaf nodes; leaf loose item blocks parent BOM creation)
 - Three dialog outcomes: blocked (red), requires resolution (orange), success (green)
 - Imports existing `parse_rows`, `build_tree`, `ensure_item_exists`, `create_bom_recursive` from `bom_upload.py` (Decision 12 — no modification to existing code)
 - **Files:**

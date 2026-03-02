@@ -233,6 +233,21 @@ if is_loose_item and not can_be_converted_to_bom:
     raise Exception("Enable conversion first")
 ```
 
+**Scope: applies to ALL nodes, including leaf nodes (AL/RM items)**
+
+The check runs on every node in the uploaded BOM tree — not just assembly nodes (M/G/D).
+Raw material / purchased component items (e.g. AL codes) can also be marked `is_loose_item=1`
+on the Project Component Master. If `can_be_converted_to_bom=0`, BOM creation is hard-blocked.
+
+A blocked **leaf node** cascades upward: any parent assembly that depends on it is also blocked.
+
+Code paths enforcing this (all three must be consistent):
+| File | Function | Notes |
+|---|---|---|
+| `bom_upload_phase1.py` | `_check_loose_items()` | Used by "Create BOM - Phase 1" button. **Bug fixed:** previously skipped leaf nodes via `if not node.get("children"): continue` |
+| `bom_upload_enhanced.py` | `analyze_upload()` | Runs leaf node loop separately after assembly loop |
+| `bom_upload_enhanced.py` | `_proceed_with_confirmed_changes()` | Confirmation flow; **bug fixed:** previously had no loose check at all |
+
 **Why keep `is_loose_item=Yes` even after conversion?**
 - Preserves procurement history
 - Loose vs BOM procurement tracked separately
