@@ -7,7 +7,7 @@
 | Branch | Purpose |
 |---|---|
 | `main` | **Always = UAT signed-off code.** Production deploys from here only. |
-| `feature/<name>` | Active development. Created from `main`, deleted after merge. |
+| `feature/<name>` | Active development. Created from `main`, tagged and deleted after merge. |
 
 > **Rule:** `main` is sacrosanct. It reflects exactly what is running and signed off on UAT.
 
@@ -45,19 +45,32 @@ git push origin main
 # 1. Create a feature branch from main
 git checkout -b feature/your-feature-name
 
-# 2. Work and commit regularly during development
+# 2. Work and commit regularly — commit as often as needed (every iteration, every fix)
+#    All these commits are your learning/development history — don't worry about quantity
 git add -A
 git commit -m "Add: description of change"
 
-# 3. Push to GitHub
+# 3. Push to GitHub regularly
 git push origin feature/your-feature-name
 
 # 4. After UAT sign-off → raise PR to main on GitHub
-# 5. After PR is merged → delete the feature branch
+#    On GitHub, choose "Squash and merge" — all commits squashed into 1 clean commit on main
+#    Write a meaningful single commit message summarising the entire feature
+
+# 5. Before deleting the branch — tag it to preserve full development history
+git tag archive/your-feature-name origin/feature/your-feature-name
+git push origin archive/your-feature-name
+
+# 6. Delete the feature branch (history is safe in the tag)
 git push origin --delete feature/your-feature-name
 git checkout main
-git pull origin main
 ```
+
+> **Why Squash and Merge?**
+> - `main` stays clean — one meaningful commit per feature
+> - Feature branch had 15 iterations? All preserved in the `archive/` tag forever
+> - GitHub Tags section becomes your full development archive
+> - Branch list stays clean with only active work visible
 
 ---
 
