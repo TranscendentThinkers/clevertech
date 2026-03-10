@@ -37,10 +37,11 @@
 **v1.9: ALL Items in BOM Tree (CURRENT DESIGN)**
 ```
 Project Component Master contains:
-✓ Root assemblies (M level) — has_bom=1, make_or_buy=Make (default)
-✓ Sub-assemblies (G level) — has_bom=1, make_or_buy=Make (default)
-✓ Sub-assemblies (D level) — has_bom=1, make_or_buy=blank (user sets manually, can be Make or Buy)
-✓ Raw materials (RM level) — has_bom=0, make_or_buy=Buy (default)
+✓ Root assemblies (M level)      — has_bom=1, make_or_buy=Make (default)
+✓ Sub-assemblies (G level)       — has_bom=1, make_or_buy=Make (default)
+✓ Sub-assemblies (D level)       — has_bom=1, make_or_buy=blank (ambiguous, user decides)
+✓ Leaf D-code items (no BOM)     — has_bom=0, make_or_buy=Buy (default, 2026-03-05)
+✓ Raw materials (RM/other level) — has_bom=0, make_or_buy=Buy (default)
 ✓ Loose raw materials — is_loose_item=1
 ```
 
@@ -1122,4 +1123,265 @@ cm = frappe.db.get_value("Project Component Master", filters, ["field1", "field2
 **Status:** ✅ Clarified and enforced (2026-02-11), 4 methods fixed in project_component_master.py
 
 ---
+
+## Decision: BOM Global Uniqueness + Machine-Level Retain Logic
+
+**Date:** 2026-03-05
+**Status:** ✅ Implemented (2026-03-05)
+
+---
+
+### Problem
+
+BOMs were being created with `project` field set (e.g., `project=SO250038`). This caused a three-way inconsistency between the hash check, the duplicate guard, and BOM creation:
+
+| Check | Project filter? |
+|---|---|
+| Hash check in `create_bom_recursive` | No — finds BOM from ANY project |
+| `before_insert` hook in `bom.py` | Yes — only checks same project |
+| BOM creation | Yes — tags BOM with current project |
+
+**Bug this causes:**
+```
+1. Machine A uploads item G  → BOM-001 (project=A, hash=H1)
+2. Machine B uploads same G, no change → hash finds BOM-001 (H1=H1) → skip → B CM links to BOM-001
+3. Machine A changes G → BOM-002 (project=A, hash=H2) → now global active default
+4. Machine B re-uploads, no design change (Excel still H1):
+   hash finds BOM-002 (H2 != H1) → creates BOM-003  WRONG
+   Machine B had no design change but got a new BOM version
+```
+
+---
+
+### Decision 1: Global BOM Uniqueness
+
+BOMs are shared catalog items, not project-specific. Remove project from BOM creation and from the duplicate guard. Hash check is already global — no change needed.
+
+| | Before | After |
+|---|---|---|
+| BOM.project | Set to uploading project | Blank |
+| Hash check | Global (unchanged) | Global (unchanged) |
+| before_insert duplicate check | Per-project | Global |
+
+Result: One canonical BOM per item. New version only created when structure genuinely changes, regardless of which machine triggers the upload.
+
+---
+
+### Decision 2: Machine-Level Retain Logic
+
+**Problem after global uniqueness:** Machine A changes item → BOM-002 becomes global default. Machine B re-uploads with no design change → hash compares against BOM-002 (H2) → mismatch with Excel (H1) → unnecessarily creates BOM-003.
+
+**Business rule (confirmed):** If Machine B's Excel structure matches what Machine B's CM already has (CM.active_bom hash), Machine B's design has not changed → retain current BOM, do not upgrade to global default, do not create new version.
+
+**Hash check order (new):**
+```
+For each assembly node during Machine B upload:
+  new_hash = MD5 of Excel children
+
+  Step 1 — CM-level check (per-machine):
+    cm_hash = hash on Machine B CM.active_bom
+    If cm_hash == new_hash → Machine B design unchanged → RETAIN → skip
+
+  Step 2 — Global check (unchanged from today):
+    If global active BOM hash == new_hash → skip
+
+  Step 3 — Neither match:
+    Machine B design genuinely changed → create new BOM version (blank project)
+```
+
+CM.active_bom is the per-machine version reference. BOMs are global; each machine's CM independently tracks which version it is on.
+
+**Why _link_boms_to_component_masters (Change 3) is also needed:**
+Even if create_bom_recursive decides "retain" in step 7, _link_boms_to_component_masters runs in step 8 and would silently override it by assigning the global active BOM (BOM-002) to Machine B's CM. The retained_items set prevents this.
+
+---
+
+### Implementation: 4 Files, 4 Changes
+
+**Change 1: bom_upload.py — create_bom_recursive()**
+- Add optional parameter: cm_bom_hashes=None (dict of item_code -> hash)
+- Before global hash check: compare cm_bom_hashes.get(item_code) with new_hash
+  - If match → return "retain" (new return value, distinct from False)
+- Remove "project": project from BOM doc creation
+- Pass cm_bom_hashes through recursive child calls
+
+**Change 2: bom_upload_phase1.py — _create_boms_for_tree() + main function**
+- Before step 7: pre-load cm_bom_hashes from DB:
+  - Get all CMs for this project+machine_code with has_bom=1
+  - For each CM with active_bom set: fetch custom_bom_structure_hash from BOM
+  - Build dict: {item_code: hash}
+- Pass cm_bom_hashes into _create_boms_for_tree
+- _create_boms_for_tree collects retained_items (items where result == "retain")
+- Pass retained_items to _link_boms_to_component_masters
+
+**Change 3: bom_upload_enhanced.py — _link_boms_to_component_masters()**
+- Add optional parameter: retained_items=None (set of item_codes)
+- If cm_data.item_code in retained_items → skip (do not update active_bom)
+- Else → existing logic unchanged
+
+**Change 4: bom.py — before_insert hook**
+- Remove "project": doc.project from duplicate check filter
+- Now checks ALL active BOMs globally (consistent with hash check)
+
+---
+
+### Return values from create_bom_recursive after change
+
+| Return | Meaning |
+|---|---|
+| True | New BOM version created |
+| False | Skipped — global hash matched or no children |
+| "retain" | Skipped — CM current BOM matches Excel → retain per-machine version |
+
+---
+
+### Full Example After Fix
+
+```
+BOM-001 (global, blank project, hash=H1)
+Machine A CM → BOM-001 | Machine B CM → BOM-001
+
+Machine A changes item (hash=H2):
+  Step 1: cm_hash(A)=H1 != H2 | Step 2: global H1 != H2 | Step 3: BOM-002 created (global, H2)
+  Machine A CM → BOM-002
+
+Machine B re-uploads, no design change (Excel hash=H1):
+  Step 1: cm_hash(B)=H1 == new_hash=H1 → RETAIN
+  No new BOM. _link_boms skips Machine B CM (in retained_items).
+  Machine B CM stays on BOM-001
+
+Machine B re-uploads later with change (Excel hash=H3):
+  Step 1: cm_hash(B)=H1 != H3 | Step 2: global H2 != H3 | Step 3: BOM-003 created (global, H3)
+  Machine B CM → BOM-003
+  Machine A CM still on BOM-002 (unaffected until Machine A re-uploads)
+```
+
+---
+
+### What Does NOT Change
+- machine_code on CM — still used for CM isolation (procurement, MR, PO)
+- project on CM — still set, still used for project scoping
+- Hash calculation logic — same MD5, just with CM-level pre-check added before global check
+- All other Phase 1 steps — items, hierarchy codes, recalculation unchanged
+- Existing BOMs with project set — no migration needed, hash check finds them regardless
+
+---
+
+### Implementation Bugs Found and Fixed (2026-03-05)
+
+**Bug 1: Stale hash — CM has bom_structure_hash but no active_bom**
+
+Root cause: Step 5 (`create_component_masters_for_all_items`) pre-sets `bom_structure_hash`
+on newly created CMs from the Excel tree, before any BOM is created. When Step 7 loaded
+`cm_bom_hashes`, it included these new CMs → retain check fired → BOM creation skipped →
+`active_bom` stayed None.
+
+Fix: Only include CMs with `active_bom` set in `cm_bom_hashes`:
+```python
+cm_bom_hashes = {
+    r.item_code: r.bom_structure_hash
+    for r in cm_records
+    if r.bom_structure_hash and r.active_bom  # active_bom guard added
+}
+```
+
+**Bug 2: False-positive version change dialog in Step 6**
+
+Root cause: `_scan_for_bom_version_changes` compared Excel hash vs global active BOM hash.
+In the retain scenario (Machine A Excel=H1, global BOM=H2), it flagged H1≠H2 as a version
+change → showed confirmation dialog even though this machine's design hadn't changed.
+
+Fix: Load `cm_bom_hashes` before Step 6 (moved from before Step 7). Pass it to
+`_scan_for_bom_version_changes`. Skip nodes where `cm_bom_hashes.get(item_code) == new_hash`.
+
+**Bug 3: Cross-machine CM contamination in Step 8**
+
+Root cause: `_link_boms_to_component_masters` fetched ALL CMs for the project (all machines).
+When Machine A uploaded and created BOM-002, Step 8 updated Machine B's CM to BOM-002 too,
+overwriting Machine B's independently tracked version.
+
+Fix: Add `machine_code=None` parameter to `_link_boms_to_component_masters`. Phase 1 passes
+`machine_code` so only the uploading machine's CMs are updated. The call from the full upload
+flow (`bom_upload_enhanced.py`) passes no machine_code → unchanged behavior for that path.
+
+---
+
+### Pending Change Request: BOM Version History Not Updated
+
+**Date raised:** 2026-03-05
+**Status:** 🔲 Pending — not yet scoped or implemented
+
+**Observation:** `bom_version_history` child table on CM is not being updated when BOM versions
+change via Phase 1 upload. E.g. PCM-SMR260001-000638 shows only one history entry even though
+active_bom changed from BOM-001 to BOM-003.
+
+**Root cause:** `on_bom_submit` (in `bom_hooks.py`) calls `_handle_bom_version_change` and
+`_add_initial_bom_version` to maintain version history. Since we removed `project` from BOM
+docs (global uniqueness change), `on_bom_submit` now hits `if not doc.project: return` at
+line 107 and exits before updating any CM. Version history is therefore never written.
+
+**Considerations before implementing:**
+- `_handle_bom_version_change` and `_add_initial_bom_version` use `get_component_master(project, item_code)` which has no `machine_code` filter. With multiple machines per item, it may update the wrong machine's CM.
+- The call should be made from `_link_boms_to_component_masters` where the correct CM is already loaded — avoids the ambiguity.
+- Must be wrapped in try/except so any failure is logged but never blocks the upload.
+- Note: old BOMs are NOT "deactivated" — they just lose `is_default`. Only `is_current` on the history row changes.
+- This was not part of the original change request — raise as a new CR before implementing.
+
+---
+
+### Non-Default Active BOM Not Recognised During First-Time CM Creation
+
+**Date raised:** 2026-03-10
+**Status:** ✅ Implemented (2026-03-10)
+
+**Scenario (observed on a completed project):**
+1. Item already has 4 BOMs in ERP — 1 default (BOM-004), 3 active non-default (BOM-001/002/003)
+2. CMs do not exist yet — being created for the first time via BOM Upload
+3. Excel BOM structure hash = hash of BOM-002 (active, non-default)
+4. `_scan_for_bom_version_changes` compares Excel hash vs default BOM only (BOM-004) → mismatch → flags version change → shows confirmation dialog
+5. User clicks Continue (expecting a new version to be created)
+6. `create_bom_recursive` Step 2 checks default BOM hash only (BOM-004) → mismatch → tries to create new BOM
+7. `before_insert` global duplicate guard (our change — no project filter) finds BOM-002 with identical structure → rejects as duplicate
+8. G-code BOM not created → parent M-code BOM also blocked (correct cascade) → CMs end up with no BOM linked
+
+**Root cause:**
+Both `_scan_for_bom_version_changes` and `create_bom_recursive` Step 2 query `is_default=1` only.
+They are blind to non-default active BOMs. The `before_insert` global guard is the only place that
+looks globally — but it fires AFTER the decision to create has already been made, leaving the CM
+with no BOM linked.
+
+**Expected behaviour:**
+When Excel hash matches a non-default active BOM:
+- Do NOT flag as a version change (no dialog)
+- Do NOT attempt to create a new BOM
+- Link CM to the matching existing BOM (even though it is not the current default)
+
+**Implementation — 5 changes across 3 files:**
+
+1. **`bom_upload_phase1.py` — `_scan_for_bom_version_changes`**
+   - Replaced `is_default=1` query with hash-based lookup across all `is_active=1` BOMs
+   - If any active BOM matches Excel hash → no dialog (not a version change)
+   - If no match → only flag as version change when a default BOM exists (to show "changing from X")
+   - `ORDER BY creation DESC` ensures deterministic pick when multiple BOMs have same hash
+
+2. **`bom_upload.py` — `create_bom_recursive`**
+   - Before creating a new BOM, checks all `is_active=1` BOMs for a hash match
+   - If match found → returns `("reuse", bom_name)` instead of proceeding to create
+   - Prevents duplicate creation that `before_insert` would reject anyway
+
+3. **`bom_upload_phase1.py` — `_create_boms_for_tree`**
+   - Handles new `("reuse", bom_name)` return value from `create_bom_recursive`
+   - Collects into `reuse_boms = {item_code: bom_name}` dict, counted as "skipped"
+   - Passes `reuse_boms` back to Phase 1 main alongside `retained_items`
+
+4. **`bom_upload_phase1.py` — Phase 1 main (Step 7→8)**
+   - Extracts `reuse_boms` from `bom_counters`
+   - Passes to `_link_boms_to_component_masters(reuse_boms=reuse_boms)`
+
+5. **`bom_upload_enhanced.py` — `_link_boms_to_component_masters`**
+   - New `reuse_boms=None` parameter
+   - When `cm_data.item_code in reuse_boms` → uses that specific BOM name directly, bypasses default BOM query
+   - Normal path (default BOM lookup) unchanged for all other items
+
+**Fresh-project flow:** completely unaffected — `reuse_boms` is empty, all existing code paths unchanged.
 

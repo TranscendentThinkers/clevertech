@@ -1,0 +1,155 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "question-sign",
+  "modified": "2024-09-23 09:42:13.929978",
+  "name": "Pending",
+  "style": "",
+  "workflow_state_name": "Pending"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-10-29 12:50:56.308879",
+  "name": "Transcation Cancelled",
+  "style": "",
+  "workflow_state_name": "Transcation Cancelled"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-12 13:50:15.147404",
+  "name": "Pending for L1 Approval",
+  "style": "",
+  "workflow_state_name": "Pending for L1 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-06 09:44:02.151991",
+  "name": "Pending L3 Approval",
+  "style": "",
+  "workflow_state_name": "Pending L3 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-06 19:47:39.412450",
+  "name": "Pending for HR Approval",
+  "style": "",
+  "workflow_state_name": "Pending for HR Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-06-25 16:44:16.107736",
+  "name": "Pending L2 Approval",
+  "style": "",
+  "workflow_state_name": "Pending L2 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2026-02-03 11:09:57.719227",
+  "name": "Pending L4 Approval",
+  "style": "",
+  "workflow_state_name": "Pending L4 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-29 11:17:16.241537",
+  "name": "Cancelled",
+  "style": "",
+  "workflow_state_name": "Cancelled"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "remove",
+  "modified": "2024-09-23 09:42:13.932307",
+  "name": "Rejected",
+  "style": "Danger",
+  "workflow_state_name": "Rejected"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-12 13:55:33.931001",
+  "name": "Approved by L2",
+  "style": "",
+  "workflow_state_name": "Approved by L2"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-02-12 13:56:20.830571",
+  "name": "Pending for L3 Approval",
+  "style": "",
+  "workflow_state_name": "Pending for L3 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2025-01-29 11:04:00.219613",
+  "name": "Pending for Approval",
+  "style": "",
+  "workflow_state_name": "Pending for Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-10-29 12:49:17.244428",
+  "name": "Pending for L2 Approval",
+  "style": "",
+  "workflow_state_name": "Pending for L2 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-10-29 12:33:28.352843",
+  "name": "Pending L1 Approval",
+  "style": "",
+  "workflow_state_name": "Pending L1 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-11-13 11:44:51.485768",
+  "name": "Approved By L1",
+  "style": "",
+  "workflow_state_name": "Approved By L1"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "ok-sign",
+  "modified": "2024-09-23 09:42:13.931453",
+  "name": "Approved",
+  "style": "Success",
+  "workflow_state_name": "Approved"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow State",
+  "icon": "",
+  "modified": "2024-10-29 12:31:49.860619",
+  "name": "Draft",
+  "style": "Primary",
+  "workflow_state_name": "Draft"
+ }
+]

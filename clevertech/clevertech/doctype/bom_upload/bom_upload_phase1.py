@@ -116,23 +116,6 @@ def create_boms_phase1(docname, confirmed=False, state_confirmed=False):
     if not tree:
         frappe.throw(_("No components found in the Excel file."))
 
-    # Step 1b: Block if any E-code items are present in the tree
-    e_code_nodes = [
-        node for node in _get_all_nodes(tree)
-        if node["item_code"].upper().startswith("E")
-    ]
-    if e_code_nodes:
-        items_list = "<br>".join(
-            f"• <b>{n['item_code']}</b> — {n.get('description') or ''}"
-            for n in e_code_nodes
-        )
-        frappe.throw(
-            f"The following E-code items are not allowed in a Machine Code BOM.<br>"
-            f"Please delete them from the Excel file and re-upload:<br><br>"
-            f"{items_list}",
-            title=_("E-Code Items Found")
-        )
-
     # Step 2: Filter non-released G-codes
     filtered_tree, skipped_info = filter_tree_by_g_code_state(tree)
 
@@ -181,9 +164,29 @@ def create_boms_phase1(docname, confirmed=False, state_confirmed=False):
     # Step 5: Create Component Masters
     cm_counters = create_component_masters_for_all_items(tree, doc.project, machine_code)
 
-    # Step 6: Check for BOM version changes (skip if user already confirmed)
+    # Pre-load CM BOM hashes for this machine (used in Steps 6 and 7).
+    # Only items with an existing active_bom are eligible for retain —
+    # a CM whose hash was pre-set at creation time (Step 5) but has no active_bom
+    # means no BOM exists yet and must not be treated as retained.
+    cm_bom_hashes = {}
+    if machine_code:
+        cm_records = frappe.get_all(
+            "Project Component Master",
+            filters={"project": doc.project, "machine_code": machine_code, "has_bom": 1},
+            fields=["item_code", "bom_structure_hash", "active_bom"],
+        )
+        cm_bom_hashes = {
+            r.item_code: r.bom_structure_hash
+            for r in cm_records
+            if r.bom_structure_hash and r.active_bom
+        }
+
+    # Step 6: Check for BOM version changes (skip if user already confirmed).
+    # Items where CM hash == Excel hash are retain candidates — the global BOM may
+    # differ (another machine created a newer version) but THIS machine's design
+    # hasn't changed, so exclude them from the confirmation dialog.
     if not confirmed:
-        version_changes = _scan_for_bom_version_changes(tree)
+        version_changes = _scan_for_bom_version_changes(tree, cm_bom_hashes=cm_bom_hashes)
         if version_changes:
             return {
                 "status": "needs_confirmation",
@@ -191,10 +194,13 @@ def create_boms_phase1(docname, confirmed=False, state_confirmed=False):
             }
 
     # Step 7: Create BOMs bottom-up
-    bom_counters = _create_boms_for_tree(tree, doc.project, ws, image_loader)
+
+    bom_counters = _create_boms_for_tree(tree, doc.project, ws, image_loader, cm_bom_hashes=cm_bom_hashes)
+    retained_items = bom_counters.pop("retained_items", set())
+    reuse_boms = bom_counters.pop("reuse_boms", {})
 
     # Step 8: Link BOMs to CMs, populate hierarchy, recalculate
-    _link_boms_to_component_masters(doc.project)
+    _link_boms_to_component_masters(doc.project, retained_items=retained_items, machine_code=machine_code, reuse_boms=reuse_boms)
     _populate_hierarchy_codes(doc.project, machine_code=machine_code, only_missing=True)
     _refresh_bom_usage_hierarchy_codes(doc.project, machine_code=machine_code)
 
@@ -267,35 +273,61 @@ def _check_loose_items(tree, project, machine_code):
     return blocked
 
 
-def _scan_for_bom_version_changes(tree):
+def _scan_for_bom_version_changes(tree, cm_bom_hashes=None):
     """
     Walk tree and find assembly nodes where an active BOM already exists
     but the structure has changed (hash mismatch).
 
+    Args:
+        cm_bom_hashes: Optional dict {item_code: bom_structure_hash} for the uploading
+            machine's CMs (only items with active_bom set). If the CM hash matches the
+            Excel hash, this machine's BOM hasn't changed — skip it even if the global
+            BOM differs (another machine may have created a newer version).
+
     Returns:
         list of dicts: [{"item_code", "description", "existing_bom"}, ...]
     """
+    if cm_bom_hashes is None:
+        cm_bom_hashes = {}
+
     changes = []
 
     def scan_node(node):
         if not node.get("children"):
             return
 
-        existing_bom = frappe.db.get_value(
+        new_hash = _calculate_tree_hash(node["children"])
+
+        # If this machine's CM hash matches Excel → retain, not a version change
+        if cm_bom_hashes.get(node["item_code"]) == new_hash:
+            for child in node.get("children", []):
+                scan_node(child)
+            return
+
+        # Check if ANY active BOM (default or non-default) already has this structure.
+        # If yes → not a version change, no dialog needed.
+        # If no → flag as version change only when a default BOM exists (show "changing from X").
+        matching_bom = frappe.db.get_value(
             "BOM",
-            {"item": node["item_code"], "is_active": 1, "is_default": 1, "docstatus": 1},
-            ["name", "custom_bom_structure_hash"],
-            as_dict=True,
+            {"item": node["item_code"], "is_active": 1, "docstatus": 1,
+             "custom_bom_structure_hash": new_hash},
+            "name",
+            order_by="creation desc",
         )
 
-        if existing_bom:
-            new_hash = _calculate_tree_hash(node["children"])
-            if existing_bom.custom_bom_structure_hash != new_hash:
+        if not matching_bom:
+            existing_default = frappe.db.get_value(
+                "BOM",
+                {"item": node["item_code"], "is_active": 1, "is_default": 1, "docstatus": 1},
+                "name",
+            )
+            if existing_default:
                 changes.append({
                     "item_code": node["item_code"],
                     "description": node.get("description") or "",
-                    "existing_bom": existing_bom.name,
+                    "existing_bom": existing_default,
                 })
+        # else: Excel matches an existing active BOM → not a version change, no dialog
 
         for child in node.get("children", []):
             scan_node(child)
@@ -306,16 +338,23 @@ def _scan_for_bom_version_changes(tree):
     return changes
 
 
-def _create_boms_for_tree(tree, project, ws, image_loader):
+def _create_boms_for_tree(tree, project, ws, image_loader, cm_bom_hashes=None):
     """
     Walk tree bottom-up and create BOMs for all assembly nodes.
     create_bom_recursive is idempotent: skips if hash unchanged,
     creates new version if hash differs (ERPNext auto-demotes old).
 
+    Args:
+        cm_bom_hashes: Optional dict {item_code: bom_structure_hash} pre-loaded from the
+            uploading machine's Component Masters. Passed through to create_bom_recursive
+            to enable the machine-level retain check.
+
     Returns:
-        dict: {"created": N, "skipped": N, "failed": N, "errors": [...]}
+        dict: {"created": N, "skipped": N, "failed": N, "errors": [...], "retained_items": set()}
     """
-    counters = {"created": 0, "skipped": 0, "failed": 0, "errors": []}
+    retained_items = set()
+    reuse_boms = {}  # {item_code: bom_name} for items where a non-default active BOM was matched
+    counters = {"created": 0, "skipped": 0, "failed": 0, "errors": [], "retained_items": retained_items, "reuse_boms": reuse_boms}
 
     def process_node(node):
         if not node.get("children"):
@@ -326,8 +365,14 @@ def _create_boms_for_tree(tree, project, ws, image_loader):
             process_node(child)
 
         try:
-            was_created = create_bom_recursive(node, project, ws, image_loader)
-            if was_created:
+            result = create_bom_recursive(node, project, ws, image_loader, cm_bom_hashes=cm_bom_hashes)
+            if result == "retain":
+                retained_items.add(node["item_code"])
+                counters["skipped"] += 1
+            elif isinstance(result, tuple) and result[0] == "reuse":
+                reuse_boms[node["item_code"]] = result[1]
+                counters["skipped"] += 1
+            elif result:
                 counters["created"] += 1
             else:
                 counters["skipped"] += 1

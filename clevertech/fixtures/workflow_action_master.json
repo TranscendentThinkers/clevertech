@@ -1,0 +1,93 @@
+[
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-09-23 09:42:13.948941",
+  "name": "Review",
+  "workflow_action_name": "Review"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-11-13 11:44:03.596079",
+  "name": "Approved By L1",
+  "workflow_action_name": "Approved By L1"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-02-03 11:16:59.847748",
+  "name": "Send for Approval",
+  "workflow_action_name": "Send for Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2026-02-05 14:39:58.083084",
+  "name": "Re-Submit",
+  "workflow_action_name": "Re-Submit"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-06-06 19:46:08.195832",
+  "name": "Submit",
+  "workflow_action_name": "Submit"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-10-29 12:50:34.422198",
+  "name": "Cancel",
+  "workflow_action_name": "Cancel"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-01-29 11:06:41.196610",
+  "name": "Sent for Approval",
+  "workflow_action_name": "Sent for Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-05-08 13:57:27.256826",
+  "name": "Revert",
+  "workflow_action_name": "Revert"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2025-02-12 13:56:01.348900",
+  "name": "Send for L3 Approval",
+  "workflow_action_name": "Send for L3 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-10-29 12:32:37.322023",
+  "name": "Send For L1 Approval",
+  "workflow_action_name": "Send For L1 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-10-29 13:44:00.257376",
+  "name": "Send for L2 Approval",
+  "workflow_action_name": "Send for L2 Approval"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-09-23 09:42:13.948287",
+  "name": "Reject",
+  "workflow_action_name": "Reject"
+ },
+ {
+  "docstatus": 0,
+  "doctype": "Workflow Action Master",
+  "modified": "2024-09-23 09:42:13.946577",
+  "name": "Approve",
+  "workflow_action_name": "Approve"
+ }
+]

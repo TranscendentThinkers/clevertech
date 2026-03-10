@@ -125,6 +125,32 @@ doctype_js = {
         "Project":"public/js/project.js",
         
 }
+fixtures = [
+    {
+        "doctype": "Workflow State"
+    },
+    {
+        "doctype": "Workflow Action Master"
+    },
+    {
+        "doctype": "Workflow",
+        "filters": [
+            ["name", "=", "SQC Approval Workflow Without Conditions"]
+        ]
+    },
+    {
+        "doctype": "Letter Head",
+        "filters": [
+            ["name","in",["Clevertech Letter Head","QC Letter Head"]]
+        ]
+    },
+    {
+        "doctype": "Email Template",
+        "filters": [
+            ["name", "=", "Request for Quotation"]
+        ]
+    }
+]
 #doctype_list_js = {
 #        "Item":"public/js/item_list.js",
 #}

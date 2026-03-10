@@ -8,12 +8,12 @@ def before_insert(doc, method):
         key=lambda x: x[0]
     )
 
-    # fetch existing BOMs with same main item + project
+    # BOMs are globally unique (no project-level scoping).
+    # Fetch existing active BOMs for same item across all projects.
     existing_boms = frappe.get_all(
         "BOM",
         filters={
             "item": doc.item,
-            "project": doc.project,
             "is_active": 1
         },
         fields=["name"]
@@ -34,7 +34,7 @@ def before_insert(doc, method):
         # Compare structure
         if new_items == existing_items_struct:
             frappe.throw(
-                _("Duplicate BOM found: <b>{0}</b> with same item, project, and items")
+                _("Duplicate BOM found: <b>{0}</b> with same item and items structure")
                 .format(bom.name)
             )
 
