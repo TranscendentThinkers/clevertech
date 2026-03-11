@@ -1,18 +1,17 @@
 frappe.ui.form.on('Material Request', {
         refresh(frm) {
                 frm.events.make_custom_buttons(frm);
-		frm.events.toggle_warehouses(frm);
+                frm.events.toggle_warehouses(frm);
         },
-	material_request_type(frm) {
-        	frm.events.toggle_warehouses(frm);
-    	},
-	toggle_warehouses(frm) {
-        	const hide = frm.doc.material_request_type === "Purchase";
-
-        	frm.set_df_property("set_from_warehouse", "hidden", hide);
-        	frm.set_df_property("set_warehouse", "hidden", hide);
-    	},
-	make_custom_buttons: function (frm) {
+        material_request_type(frm) {
+                frm.events.toggle_warehouses(frm);
+        },
+        toggle_warehouses(frm) {
+                const hide = frm.doc.material_request_type === "Purchase";
+                frm.set_df_property("set_from_warehouse", "hidden", hide);
+                frm.set_df_property("set_warehouse", "hidden", hide);
+        },
+        make_custom_buttons: function (frm) {
         if (frm.doc.docstatus == 0) {
             frm.add_custom_button(
                     __("Bill of Materials"),
@@ -44,7 +43,6 @@ frappe.ui.form.on('Material Request', {
                         () => frm.events.make_stock_entry(frm),
                         __("Create")
                     );
-
                     frm.add_custom_button(
                         __("Material Transfer (In Transit)"),
                         () => frm.events.make_in_transit_stock_entry(frm),
@@ -74,13 +72,11 @@ frappe.ui.form.on('Material Request', {
                             () => frm.events.make_purchase_order(frm),
                             __("Create")
                     );
-
                     frm.add_custom_button(
                             __("Request for Quotation"),
                             () => frm.events.make_request_for_quotation(frm),
                             __("Create")
                     );
-
                     frm.add_custom_button(
                             __("Supplier Quotation"),
                             () => frm.events.make_supplier_quotation(frm),
@@ -168,7 +164,7 @@ frappe.ui.form.on('Material Request', {
                                 d.item_name = item.item_name;
                                 d.description = item.description;
                                 d.warehouse = values.warehouse;
-                               d.uom = item.stock_uom;
+                                d.uom = item.stock_uom;
                                 d.stock_uom = item.stock_uom;
                                 d.conversion_factor = 1;
                                 d.qty = item.qty;
@@ -176,8 +172,6 @@ frappe.ui.form.on('Material Request', {
                                 d.bom_no = values.bom;
                                 d.custom_bom_qty = item.qty;
                             });
-
-                            // Track which BOM was used for procurement
                             frm.set_value('custom_procurement_bom', values.bom);
                         }
                         d.hide();
@@ -190,12 +184,10 @@ frappe.ui.form.on('Material Request', {
         d.show();
     },
     validate: function(frm) {
-       // Skip if already confirmed once
         if (frm.skip_bom_qty_check) return;
 
         let items_exceeding = frm.doc.items.filter(i => i.bom_no && i.custom_bom_qty && i.qty > i.custom_bom_qty);
 
-        // Show warning only once (avoid duplicate from recursive save in check_bom_qty)
         if (items_exceeding.length > 0 && !frm._bom_qty_warning_shown) {
             frm._bom_qty_warning_shown = true;
             frappe.validated = false;
@@ -209,7 +201,7 @@ frappe.ui.form.on('Material Request', {
         }
         frm.trigger("check_bom_qty");
     },
-	check_bom_qty(frm) {
+        check_bom_qty(frm) {
         if (frm._extra_items_checked) return;
 
         if (
@@ -219,7 +211,7 @@ frappe.ui.form.on('Material Request', {
             return;
         }
 
-        frappe.validated = false; // HARD STOP
+        frappe.validated = false;
 
         frappe.call({
             method: "clevertech.server_scripts.material_request.check_over_requested_items",
@@ -235,43 +227,39 @@ frappe.ui.form.on('Material Request', {
             }
         });
     },
-	custom_required_by_in_days(frm) {
-		set_required_by_date(frm)
-        
+        custom_required_by_in_days(frm) {
+                set_required_by_date(frm);
     },
-	transaction_date(frm){
-		set_required_by_date(frm)
-
+        transaction_date(frm){
+                set_required_by_date(frm);
     },
-	onload(frm){
-		set_required_by_date(frm)
-
-    }
-
-
+        onload(frm){
+                set_required_by_date(frm);
+    },
+        schedule_date(frm) {
+                sync_schedule_date_to_items(frm);
+        }
 });
 
 
 
 frappe.ui.form.on("Material Request Item", {
     item_code: function(frm, cdt, cdn) {
-	    update_actual_qty(frm,cdt,cdn)
-    },
-
-    qty: function(frm, cdt, cdn) {
-	    update_actual_qty(frm,cdt,cdn)
-    },
-       refresh: function(frm, cdt, cdn) {
             update_actual_qty(frm,cdt,cdn)
     },
-
+    qty: function(frm, cdt, cdn) {
+            update_actual_qty(frm,cdt,cdn)
+    },
+    refresh: function(frm, cdt, cdn) {
+            update_actual_qty(frm,cdt,cdn)
+    },
     set_from_warehouse:function(frm, cdt, cdn) {
             update_actual_qty(frm,cdt,cdn)
     },
-
 });
+
 function update_actual_qty(frm,cdt,cdn){
-	frappe.call({
+        frappe.call({
             method: "clevertech.server_scripts.material_request.check_item_stock",
             args: {
                 parent_doc: frm.doc,
@@ -283,19 +271,24 @@ function update_actual_qty(frm,cdt,cdn){
                 }
             }
         });
-
 }
 
-function set_required_by_date(frm){
-	if (frm.doc.custom_required_by_in_days && frm.doc.transaction_date) {
+function set_required_by_date(frm) {
+        if (frm.doc.custom_required_by_in_days && frm.doc.transaction_date) {
             let new_date = frappe.datetime.add_days(
                 frm.doc.transaction_date,
                 frm.doc.custom_required_by_in_days
             );
-
             frm.set_value('schedule_date', new_date);
         }
+}
 
+function sync_schedule_date_to_items(frm) {
+        if (!frm.doc.schedule_date) return;
+
+        (frm.doc.items || []).forEach(row => {
+            frappe.model.set_value(row.doctype, row.name, 'schedule_date', frm.doc.schedule_date);
+        });
 }
 
 function show_extra_items_dialog(frm, items) {
@@ -331,30 +324,25 @@ function show_extra_items_dialog(frm, items) {
         secondary_action_label: "Delete Selected Items"
     });
 
-    // Select all
     dialog.$body.on("click", "#select_all", () => {
         dialog.$body.find(".extra-item").prop("checked", true);
     });
 
-    // Unselect all
     dialog.$body.on("click", "#unselect_all", () => {
         dialog.$body.find(".extra-item").prop("checked", false);
     });
 
-    // CONFIRM → KEEP ALL ITEMS
     dialog.set_primary_action("Confirm", () => {
-    frm._extra_items_checked = true;
-    dialog.hide();
-});
+        frm._extra_items_checked = true;
+        dialog.hide();
+    });
 
-    //  DELETE SELECTED ITEMS
     dialog.set_secondary_action(() => {
         let selected = dialog.$body
             .find(".extra-item:checked")
             .map((_, el) => el.value)
             .get();
 
-        // delete silently (no validation)
         frm.doc.items = frm.doc.items.filter(
             row => !selected.includes(row.item_code)
         );
@@ -362,7 +350,6 @@ function show_extra_items_dialog(frm, items) {
         frm.refresh_field("items");
         frm._extra_items_checked = true;
         dialog.hide();
-        // user saves manually
     });
 
     dialog.show();

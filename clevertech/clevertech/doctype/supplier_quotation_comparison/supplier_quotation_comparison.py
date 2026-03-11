@@ -3,6 +3,13 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import today, add_days
 
+def get_incoterm_title(code):
+    """Fetch the title of an Incoterm given its code/name"""
+    if not code:
+        return ""
+    return frappe.db.get_value("Incoterm", code, "title") or code
+
+
 class SupplierQuotationComparison(Document):
     def validate(self):
         self.validate_request_for_quotations()
@@ -123,6 +130,22 @@ class SupplierQuotationComparison(Document):
         if not cost_center:
             frappe.throw(_("Cost Center is mandatory for creating Purchase Orders. Please set the Cost Center field before submitting."))
 
+        # Validate that all items have a supplier selected (not NA / zero rate)
+        items_missing_supplier = []
+        for row in self.supplier_selection_table:
+            if not row.item_code:
+                continue
+            if not row.supplier or not row.supplier_quotation or not row.rate:
+                items_missing_supplier.append(row.item_code)
+
+        if items_missing_supplier:
+            frappe.throw(
+                _("Cannot create Purchase Orders. The following items do not have a supplier selected "
+                  "(possibly no supplier provided a valid quotation):<br><br>{0}").format(
+                    "<br>".join([frappe.bold(item) for item in items_missing_supplier])
+                )
+            )
+
         # Check if POs are already created for all items
         items_with_po = []
         items_without_po = []
@@ -174,10 +197,12 @@ class SupplierQuotationComparison(Document):
 
             supplier_quotation_map[sq_name].append({
                 "item_code": row.item_code,
+                "material_request": row.get("material_request") or "",
                 "qty": row.qty or 0,
                 "rate": row.rate or 0,
                 "payment_terms_template": row.get("payment_terms_template"),
-                "delivery_term": row.get("delivery_term")
+                "delivery_term": row.get("delivery_term"),
+                "notes": row.get("notes") or ""
             })
 
         if not supplier_quotation_map:
@@ -194,8 +219,8 @@ class SupplierQuotationComparison(Document):
             if po:
                 created_pos.append(po.name)
                 # Update selection table with PO reference
-                selected_item_codes = {item["item_code"] for item in items}
-                add_po_reference(self, po, selected_item_codes)
+                selected_item_keys = {(item["item_code"], item["material_request"]) for item in items}
+                add_po_reference(self, po, selected_item_keys)
 
         # Save the document to persist PO references (using db_update to avoid re-triggering submit)
         for row in self.supplier_selection_table:
@@ -293,17 +318,20 @@ class SupplierQuotationComparison(Document):
         rfq_doc = frappe.get_doc("Request for Quotation", self.request_for_quotation)
         self.supplier_selection_table = []
 
-        # Populate the child table
+        # Populate the child table — include material_request from RFQ items
         for row in rfq_doc.items:
             self.append("supplier_selection_table", {
-                "item_code": row.item_code
+                "item_code": row.item_code,
+                "material_request": row.get("material_request") or ""
             })
 
+
 @frappe.whitelist()
-def get_supplier_quotation(rfq, supplier, item_code=None):
+def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None):
     """
-    Fetch the supplier quotation linked to the RFQ where supplier matches
-    If item_code is provided, also return rate, qty, amount, and delivery_term for that item
+    Fetch the supplier quotation linked to the RFQ where supplier matches.
+    If item_code is provided, return rate/qty/amount for that item.
+    If material_request is also provided, match by both item_code and material_request.
     """
     if not rfq or not supplier:
         return None
@@ -326,25 +354,35 @@ def get_supplier_quotation(rfq, supplier, item_code=None):
                     try:
                         sq_doc = frappe.get_doc("Supplier Quotation", sq_name)
 
-                        # Get delivery_term and payment_terms from supplier quotation
-                        delivery_term = sq_doc.get("custom_delivery_terms")
-                        payment_terms_template = sq_doc.get("custom_payment_terms_template")
+                        # Get delivery_term, payment_terms, and notes from supplier quotation
+                        delivery_term = sq_doc.get("custom_delivery_terms") or ""
+                        payment_terms_template = sq_doc.get("custom_payment_terms_template") or ""
+                        notes = sq_doc.get("custom_note") or ""
 
-                        # Find the matching item in the supplier quotation
+                        # Find the matching item — match by item_code AND material_request if provided
+                        matched_item = None
                         for item in sq_doc.items:
                             if item.item_code == item_code:
-                                # # Calculate total tax for this item
-                                # total_tax = calculate_item_tax(item)
+                                if material_request:
+                                    item_mr = item.get("material_request") or ""
+                                    if item_mr == material_request:
+                                        matched_item = item
+                                        break
+                                else:
+                                    # No MR filter — take first match
+                                    matched_item = item
+                                    break
 
-                                return {
-                                    "name": sq_name,
-                                    "rate": item.rate,
-                                    "qty": item.qty,
-                                    "amount": item.amount,
-                                    # "total_tax": total_tax,
-                                    "delivery_term": delivery_term,
-                                    "payment_terms_template": payment_terms_template
-                                }
+                        if matched_item:
+                            return {
+                                "name": sq_name,
+                                "rate": matched_item.rate,
+                                "qty": matched_item.qty,
+                                "amount": matched_item.amount,
+                                "delivery_term": delivery_term,
+                                "payment_terms_template": payment_terms_template,
+                                "notes": notes
+                            }
 
                         # Item not found in this quotation
                         return {
@@ -352,9 +390,9 @@ def get_supplier_quotation(rfq, supplier, item_code=None):
                             "rate": 0,
                             "qty": 0,
                             "amount": 0,
-                            # "total_tax": 0,
                             "delivery_term": delivery_term,
-                            "payment_terms_template": payment_terms_template
+                            "payment_terms_template": payment_terms_template,
+                            "notes": notes
                         }
                     except Exception as e:
                         frappe.logger().error(f"Error fetching Supplier Quotation {sq_name}: {str(e)}")
@@ -363,9 +401,9 @@ def get_supplier_quotation(rfq, supplier, item_code=None):
                             "rate": 0,
                             "qty": 0,
                             "amount": 0,
-                            # "total_tax": 0,
                             "delivery_term": None,
-                            "payment_terms_template": None
+                            "payment_terms_template": None,
+                            "notes": ""
                         }
                 else:
                     return sq_name
@@ -375,31 +413,6 @@ def get_supplier_quotation(rfq, supplier, item_code=None):
     except Exception as e:
         frappe.logger().error(f"Error in get_supplier_quotation: {str(e)}")
         return None
-
-
-# def calculate_item_tax(item):
-#     """
-#     Calculate total tax for an item by summing up all tax amounts
-#     Supports: igst_amount, cgst_amount, sgst_amount, cess_amount, cess_non_advol_amount
-#     """
-#     total_tax = 0
-#
-#     # List of tax field names to check
-#     tax_fields = [
-#         'igst_amount',
-#         'cgst_amount',
-#         'sgst_amount',
-#         'cess_amount',
-#         'cess_non_advol_amount'
-#     ]
-#
-#     for field in tax_fields:
-#         if hasattr(item, field):
-#             field_value = getattr(item, field)
-#             if field_value:
-#                 total_tax += field_value
-#
-#     return total_tax
 
 
 @frappe.whitelist()
@@ -441,9 +454,27 @@ def get_comparison_report_data(docname):
             processed_suppliers[sq.supplier] = sq.name
             supplier_grand_totals[sq.supplier] = sq.grand_total or 0
 
+    # Fetch payment terms, delivery terms per supplier from their quotations
+    supplier_payment_terms = {}
+    supplier_delivery_terms = {}
+    supplier_notes = {}
+
+    for supplier, sq_name in processed_suppliers.items():
+        sq_doc = frappe.get_doc("Supplier Quotation", sq_name)
+        supplier_payment_terms[supplier] = sq_doc.get("custom_payment_terms_template") or ""
+        delivery_term_code = sq_doc.get("custom_delivery_terms") or ""
+        supplier_delivery_terms[supplier] = get_incoterm_title(delivery_term_code) if delivery_term_code else ""
+        supplier_notes[supplier] = sq_doc.get("custom_note") or ""
+
     # Prepare item structure from RFQ
+    # Use (item_code, material_request) as composite key to support duplicate item codes
     items_data = {}
+    item_order = []  # preserve insertion order
+
     for rfq_item in rfq_doc.items:
+        material_request = rfq_item.get("material_request") or ""
+        key = (rfq_item.item_code, material_request)
+
         last_purchase = get_last_purchase_details(rfq_item.item_code)
 
         # Strip HTML tags from description
@@ -452,15 +483,18 @@ def get_comparison_report_data(docname):
             from frappe.utils import strip_html_tags
             description = strip_html_tags(description)
 
-        items_data[rfq_item.item_code] = {
+        items_data[key] = {
+            "item_code": rfq_item.item_code,
+            "material_request": material_request,
             "description": description,
             "qty": rfq_item.qty,
             "uom": rfq_item.uom or rfq_item.stock_uom,
             "last_purchase_rate": last_purchase.get("rate", ""),
             "last_purchase_supplier": last_purchase.get("supplier", "")
         }
+        item_order.append(key)
 
-    # Track lowest rate supplier per item (considering amount only)
+    # Track lowest rate supplier per (item_code, material_request) composite key
     lowest_rate_suppliers = {}
 
     # Iterate through suppliers that have quotations
@@ -472,65 +506,79 @@ def get_comparison_report_data(docname):
             continue
 
         for item in sq_doc.items:
-            if item.item_code in items_data:
-                # # Calculate total tax for this item
-                # total_tax = calculate_item_tax(item)
+            item_mr = item.get("material_request") or ""
+            key = (item.item_code, item_mr)
 
-                items_data[item.item_code][supplier] = {
+            if key in items_data:
+                items_data[key][supplier] = {
                     "rate": item.rate,
                     "qty": item.qty,
                     "amount": item.amount,
-                    # "total_tax": total_tax
                 }
 
-                # Compare by amount only (no tax)
-                if item.item_code not in lowest_rate_suppliers:
-                    lowest_rate_suppliers[item.item_code] = {
-                        "supplier": supplier,
-                        "rate": item.rate,
-                        "qty": item.qty,
-                        "amount": item.amount,
-                        # "total_tax": total_tax,
-                        "supplier_quotation": sq_name
-                    }
-                elif item.amount < lowest_rate_suppliers[item.item_code]["amount"]:
-                    lowest_rate_suppliers[item.item_code] = {
-                        "supplier": supplier,
-                        "rate": item.rate,
-                        "qty": item.qty,
-                        "amount": item.amount,
-                        # "total_tax": total_tax,
-                        "supplier_quotation": sq_name
-                    }
+                # Compare by rate; on tie use supplier grand total as tiebreaker
+                if item.rate and item.rate > 0:
+                    if key not in lowest_rate_suppliers:
+                        lowest_rate_suppliers[key] = {
+                            "supplier": supplier,
+                            "rate": item.rate,
+                            "qty": item.qty,
+                            "amount": item.amount,
+                            "supplier_quotation": sq_name
+                        }
+                    else:
+                        current = lowest_rate_suppliers[key]
+                        current_grand_total = supplier_grand_totals.get(current["supplier"], 0) or 0
+                        new_grand_total = supplier_grand_totals.get(supplier, 0) or 0
+                        if item.rate < current["rate"]:
+                            # Strictly lower rate — replace
+                            lowest_rate_suppliers[key] = {
+                                "supplier": supplier,
+                                "rate": item.rate,
+                                "qty": item.qty,
+                                "amount": item.amount,
+                                "supplier_quotation": sq_name
+                            }
+                        elif item.rate == current["rate"] and new_grand_total < current_grand_total:
+                            # Same rate — prefer supplier with lower grand total
+                            lowest_rate_suppliers[key] = {
+                                "supplier": supplier,
+                                "rate": item.rate,
+                                "qty": item.qty,
+                                "amount": item.amount,
+                                "supplier_quotation": sq_name
+                            }
 
     # Populate supplier selection table
     sqc.set("supplier_selection_table", [])
 
     grand_total = 0
 
-    for item_code, lowest_info in lowest_rate_suppliers.items():
-        # Fetch delivery_term and payment_terms from supplier quotation
-        sq_delivery_term, sq_payment_terms = frappe.db.get_value(
+    for key, lowest_info in lowest_rate_suppliers.items():
+        item_code, material_request = key
+
+        # Fetch delivery_term, payment_terms, and notes from supplier quotation
+        sq_delivery_term, sq_payment_terms, sq_notes = frappe.db.get_value(
             "Supplier Quotation",
             lowest_info["supplier_quotation"],
-            ["custom_delivery_terms", "custom_payment_terms_template"]
+            ["custom_delivery_terms", "custom_payment_terms_template", "custom_note"]
         )
 
         sqc.append("supplier_selection_table", {
             "item_code": item_code,
+            "material_request": material_request,
             "suggested_supplier": lowest_info["supplier"],
             "supplier": lowest_info["supplier"],
             "supplier_quotation": lowest_info["supplier_quotation"],
             "rate": lowest_info["rate"],
             "qty": lowest_info["qty"],
             "amount": lowest_info["amount"],
-            # "total_tax": lowest_info["total_tax"],
             "payment_terms_template": sq_payment_terms,
             "delivery_term": sq_delivery_term,
+            "notes": sq_notes or "",
             "manually_changed": 0
         })
 
-        # Grand total is sum of amount only (no tax)
         grand_total += lowest_info["amount"]
 
     # Set the grand total
@@ -541,9 +589,14 @@ def get_comparison_report_data(docname):
 
     # Use all suppliers from RFQ (sorted)
     suppliers = sorted(all_rfq_suppliers)
-    for item_code, item_info in items_data.items():
+
+    for key in item_order:
+        item_info = items_data[key]
+        item_code, material_request = key
+
         row_data = {
             "item_code": item_code,
+            "material_request": material_request,
             "description": item_info.get("description", ""),
             "qty": item_info.get("qty", 0),
             "uom": item_info.get("uom", ""),
@@ -551,21 +604,25 @@ def get_comparison_report_data(docname):
             "last_purchase_supplier": item_info.get("last_purchase_supplier", "")
         }
 
-        # Store supplier rates as JSON
+        # Store supplier rates as JSON (treat 0 rate as N/A)
         supplier_rates = {}
         for supplier in suppliers:
             supplier_data = item_info.get(supplier, {})
             if supplier_data:
-                supplier_rates[supplier_names[supplier]] = supplier_data.get("rate", "N/A")
+                rate_val = supplier_data.get("rate", None)
+                supplier_rates[supplier_names[supplier]] = "N/A" if (rate_val is None or rate_val == 0) else rate_val
             else:
                 supplier_rates[supplier_names[supplier]] = "N/A"
 
-        row_data["supplier_rates"] = frappe.as_json(supplier_rates)
+        # Embed the lowest supplier name directly in supplier_rates JSON
+        # so the JS doesn't need to rely on a separate child table field
+        if key in lowest_rate_suppliers:
+            lowest_supplier = lowest_rate_suppliers[key]["supplier"]
+            lowest_display_name = supplier_names.get(lowest_supplier, lowest_supplier)
+            supplier_rates["__lowest__"] = lowest_display_name
+            row_data["lowest_rate_supplier"] = lowest_display_name
 
-        # Mark if this is the lowest rate
-        if item_code in lowest_rate_suppliers:
-            lowest_supplier = lowest_rate_suppliers[item_code]["supplier"]
-            row_data["lowest_rate_supplier"] = supplier_names.get(lowest_supplier, lowest_supplier)
+        row_data["supplier_rates"] = frappe.as_json(supplier_rates)
 
         sqc.append("comparison_table", row_data)
 
@@ -580,6 +637,7 @@ def get_comparison_report_data(docname):
 
     total_row = {
         "item_code": "TOTAL",
+        "material_request": "",
         "description": "",
         "qty": 0,
         "uom": "",
@@ -590,19 +648,63 @@ def get_comparison_report_data(docname):
     }
     sqc.append("comparison_table", total_row)
 
+    # Add payment terms, delivery terms, and notes rows
+    payment_terms_data = {}
+    delivery_terms_data = {}
+    notes_data = {}
+    for supplier in suppliers:
+        name = supplier_names[supplier]
+        payment_terms_data[name] = supplier_payment_terms.get(supplier, "") if supplier in processed_suppliers else "No Quotation"
+        delivery_terms_data[name] = supplier_delivery_terms.get(supplier, "") if supplier in processed_suppliers else "No Quotation"
+        notes_data[name] = supplier_notes.get(supplier, "") if supplier in processed_suppliers else "No Quotation"
+
+    sqc.append("comparison_table", {
+        "item_code": "PAYMENT_TERMS",
+        "material_request": "",
+        "description": "",
+        "qty": 0,
+        "uom": "",
+        "last_purchase_rate": 0,
+        "last_purchase_supplier": "",
+        "supplier_rates": frappe.as_json(payment_terms_data)
+    })
+    sqc.append("comparison_table", {
+        "item_code": "DELIVERY_TERMS",
+        "material_request": "",
+        "description": "",
+        "qty": 0,
+        "uom": "",
+        "last_purchase_rate": 0,
+        "last_purchase_supplier": "",
+        "supplier_rates": frappe.as_json(delivery_terms_data)
+    })
+    sqc.append("comparison_table", {
+        "item_code": "NOTES",
+        "material_request": "",
+        "description": "",
+        "qty": 0,
+        "uom": "",
+        "last_purchase_rate": 0,
+        "last_purchase_supplier": "",
+        "supplier_rates": frappe.as_json(notes_data)
+    })
     sqc.save(ignore_permissions=True)
     frappe.db.commit()
 
     # Build report columns
-    columns = ["Item Code", "Description", "Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"]
+    columns = ["Item Code", "Material Request", "Description", "Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"]
     for supplier in suppliers:
         columns.append(f"{supplier_names[supplier]} - Rate")
 
     # Build report rows
     data = []
-    for item_code, item_info in items_data.items():
+    for key in item_order:
+        item_info = items_data[key]
+        item_code, material_request = key
+
         row = {
             "Item Code": item_code,
+            "Material Request": material_request,
             "Description": item_info.get("description", ""),
             "Qty": item_info.get("qty", ""),
             "UOM": item_info.get("uom", ""),
@@ -613,7 +715,8 @@ def get_comparison_report_data(docname):
         for supplier in suppliers:
             supplier_data = item_info.get(supplier, {})
             if supplier_data:
-                row[f"{supplier_names[supplier]} - Rate"] = supplier_data.get("rate", "N/A")
+                rate_val = supplier_data.get("rate", None)
+                row[f"{supplier_names[supplier]} - Rate"] = "N/A" if (rate_val is None or rate_val == 0) else rate_val
             else:
                 row[f"{supplier_names[supplier]} - Rate"] = "N/A"
 
@@ -622,6 +725,7 @@ def get_comparison_report_data(docname):
     # Add total row to report data
     total_row_data = {
         "Item Code": "TOTAL",
+        "Material Request": "",
         "Description": "",
         "Qty": "",
         "UOM": "",
@@ -639,9 +743,26 @@ def get_comparison_report_data(docname):
     return {
         "columns": columns,
         "data": data,
-        "lowest_rate_suppliers": lowest_rate_suppliers,
+        "lowest_rate_suppliers": {f"{k[0]}|{k[1]}": v for k, v in lowest_rate_suppliers.items()},
         "supplier_id_to_name": supplier_names
     }
+
+
+@frappe.whitelist()
+def clear_selection_table_links(docname):
+    """Clear purchase_order and supplier_quotation from all rows in supplier_selection_table"""
+    doc = frappe.get_doc("Supplier Quotation Comparison", docname)
+
+    if doc.docstatus != 1:
+        frappe.throw(_("Document must be submitted to clear links"))
+
+    for row in doc.supplier_selection_table:
+        row.purchase_order = ""
+        row.supplier_quotation = ""
+
+    doc.flags.ignore_validate_update_after_submit = True
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
 
 
 def get_last_purchase_details(item_code):
@@ -673,104 +794,15 @@ def get_last_purchase_details(item_code):
     return {"rate": "", "supplier": ""}
 
 
-@frappe.whitelist()
-def create_purchase_orders(doc_name):
-    try:
-        doc = frappe.get_doc("Supplier Quotation Comparison", doc_name)
-        if not doc.supplier_selection_table:
-            frappe.throw(_("No items in supplier selection table"))
-
-        if not doc.request_for_quotation:
-            frappe.throw(_("Request for Quotation is required"))
-
-        project = doc.get("project")
-        cost_center = doc.get("cost_center")
-
-        if not project:
-            frappe.throw(_("Project is mandatory for creating Purchase Orders. Please set the Project field before proceeding."))
-
-        if not cost_center:
-            frappe.throw(_("Cost Center is mandatory for creating Purchase Orders. Please set the Cost Center field before proceeding."))
-
-        items_with_po = []
-        items_without_po = []
-
-        for row in doc.supplier_selection_table:
-            if not row.supplier or not row.supplier_quotation or not row.item_code:
-                continue
-
-            if row.purchase_order:
-                items_with_po.append(f"{row.item_code} (PO: {row.purchase_order})")
-            else:
-                items_without_po.append(row.item_code)
-
-        if items_with_po and not items_without_po:
-            frappe.throw(
-                _("Purchase Orders have already been created for all items.<br><br>Items with POs:<br>{0}").format(
-                    "<br>".join(items_with_po)
-                )
-            )
-
-        if items_with_po:
-            frappe.msgprint(
-                _("Note: The following items already have Purchase Orders and will be skipped:<br><br>{0}").format(
-                    "<br>".join(items_with_po)
-                ),
-                indicator="orange",
-                title=_("Some Items Already Have POs")
-            )
-
-        supplier_quotation_map = {}
-
-        for row in doc.supplier_selection_table:
-            if not row.supplier or not row.supplier_quotation or not row.item_code:
-                continue
-
-            if row.purchase_order:
-                continue
-
-            sq_name = row.supplier_quotation
-
-            if sq_name not in supplier_quotation_map:
-                supplier_quotation_map[sq_name] = []
-
-            supplier_quotation_map[sq_name].append({
-                "item_code": row.item_code,
-                "qty": row.qty or 0,
-                "rate": row.rate or 0,
-                "payment_terms_template": row.get("payment_terms_template"),
-                "delivery_term": row.get("delivery_term")
-            })
-
-        if not supplier_quotation_map:
-            frappe.throw(_("No valid items with supplier quotations selected"))
-
-        created_pos = []
-
-        for sq_name, items in supplier_quotation_map.items():
-            po = create_po_from_supplier_quotation(sq_name, items, doc, project, cost_center, doc.required_by_date)
-            if po:
-                created_pos.append(po.name)
-                selected_item_codes = {item["item_code"] for item in items}
-                add_po_reference(doc, po, selected_item_codes)
-
-        doc.save(ignore_permissions=True)
-
-        return {
-            "success": True,
-            "purchase_orders": created_pos,
-            "message": f"Successfully created {len(created_pos)} Purchase Order(s) in Draft"
-        }
-
-    except Exception as e:
-        frappe.logger().error(f"Error creating purchase orders: {str(e)}")
-        frappe.throw(_("Error creating purchase orders: {0}").format(str(e)))
-
-
-def add_po_reference(comparison_doc, po, selected_item_codes):
-    """Update selection table rows with purchase_order field"""
+def add_po_reference(comparison_doc, po, selected_item_keys):
+    """
+    Update selection table rows with purchase_order field.
+    selected_item_keys is a set of (item_code, material_request) tuples.
+    """
     for row in comparison_doc.supplier_selection_table:
-        if row.item_code in selected_item_codes and row.supplier == po.supplier:
+        row_mr = row.get("material_request") or ""
+        key = (row.item_code, row_mr)
+        if key in selected_item_keys and row.supplier == po.supplier:
             row.purchase_order = po.name
 
 
@@ -832,12 +864,17 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
                     if hasattr(po, 'custom_approver_designation'):
                         po.custom_approver_designation = approver_employee.get("designation")
 
-        selected_item_codes = {item["item_code"] for item in selected_items}
-        selected_items_map = {item["item_code"]: item for item in selected_items}
+        # Build a map keyed by (item_code, material_request) for precise matching
+        selected_items_map = {
+            (item["item_code"], item.get("material_request") or ""): item
+            for item in selected_items
+        }
+        selected_item_keys = set(selected_items_map.keys())
 
         first_item = selected_items[0] if selected_items else {}
         payment_terms_template = first_item.get("payment_terms_template")
         delivery_term = first_item.get("delivery_term")
+        notes = first_item.get("notes") or ""
 
         if payment_terms_template:
             po.payment_terms_template = payment_terms_template
@@ -845,6 +882,9 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
 
         if delivery_term and hasattr(po, 'custom_delivery_terms'):
             po.custom_delivery_terms = delivery_term
+
+        if notes and hasattr(po, 'custom_notes'):
+            po.custom_notes = notes
 
         # Set terms and conditions
         po.tc_name = "GENERAL PURCHASE TERMS AND CONDITIONS"
@@ -854,8 +894,11 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
 
         items_to_keep = []
         for po_item in po.items:
-            if po_item.item_code in selected_item_codes:
-                selected_item = selected_items_map[po_item.item_code]
+            po_item_mr = po_item.get("material_request") or ""
+            key = (po_item.item_code, po_item_mr)
+
+            if key in selected_item_keys:
+                selected_item = selected_items_map[key]
                 po_item.qty = selected_item["qty"]
                 po_item.rate = selected_item["rate"]
 
@@ -872,6 +915,10 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
                 elif hasattr(po_item, 'cost_center'):
                     po_item.cost_center = cost_center
 
+                # Set material_request on the PO item if the field exists
+                if hasattr(po_item, 'material_request') and selected_item.get("material_request"):
+                    po_item.material_request = selected_item["material_request"]
+
                 items_to_keep.append(po_item)
 
         po.items = items_to_keep
@@ -884,14 +931,13 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
         po.submit()
 
         frappe.msgprint(
-            _("Purchase Order {0} created in Draft for supplier {1}").format(
+            _("Purchase Order {0} successfully submitted for supplier {1}").format(
                 frappe.bold(po.name),
                 frappe.bold(po.supplier)
             )
         )
 
         return po
-
     except Exception as e:
         frappe.logger().error(f"Error creating PO from SQ {sq_name}: {str(e)}")
         raise

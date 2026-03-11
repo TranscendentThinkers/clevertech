@@ -19,6 +19,12 @@ class BOMUpload(Document):
     pass
 
 
+def get_default_company():
+    """Fetch the first company from the database dynamically — avoids hardcoding company name."""
+    return frappe.db.get_single_value("Global Defaults", "default_company") or \
+           frappe.db.get_value("Company", {}, "name")
+
+
 @frappe.whitelist()
 def create_boms(docname):
     doc = frappe.get_doc("BOM Upload", docname)
@@ -75,6 +81,7 @@ def to_float(val, default=0):
         return float(val)
     except Exception:
         return default
+
 def _calculate_tree_hash(children):
     """
     Calculate MD5 hash of BOM structure from tree node children.
@@ -190,6 +197,7 @@ def get_type_of_material(description):
     )
 
     return type_of_mat
+
 def get_surface_treatment(treatment):
     """Map Italian surface treatment to English using Surface Treatment Translation doctype"""
     if not treatment:
@@ -264,7 +272,6 @@ def build_tree(rows):
 
     return roots
 
-
 # ================= Items =================
 def ensure_item_exists(item_code, description, extended_description, uom, row_num, ws, image_loader, material=None, treatment=None, weight=None, part_number=None, manufacturer=None, revision=None):
     """
@@ -277,15 +284,40 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
     if frappe.db.exists("Item", item_code):
         # Item exists - check if we need to update any fields
         existing_item = frappe.get_doc("Item", item_code)
-        
+
+        # --- Image update: independent of revision logic ---
+        # If item has no image and an image exists in Excel, upload it now
+        if HAS_IMAGE_LOADER and image_loader and not existing_item.image:
+            try:
+                image_cell = f"A{row_num}"
+                if image_loader.image_in(image_cell):
+                    img = image_loader.get(image_cell)
+                    img_bytes = io.BytesIO()
+                    img.save(img_bytes, format="PNG")
+
+                    file_obj = save_file(
+                        f"{item_code}.png",
+                        img_bytes.getvalue(),
+                        "Item",
+                        item_code,
+                        is_private=0
+                    )
+
+                    existing_item.image = file_obj.file_url
+                    existing_item.flags.ignore_validate = True
+                    existing_item.save(ignore_permissions=True)
+                    frappe.log_error(f"Image updated for existing item: {item_code}", "BOM Upload Image Update")
+            except Exception as e:
+                frappe.log_error(f"Image update failed for {item_code}: {str(e)}", "BOM Upload Image Error")
+
         # Check if revision has changed - only update if revision is different
         existing_revision = existing_item.get("custom_revision_no")
         new_revision = revision if revision is not None and revision != "" else None
-        
+
         # If revisions match, skip update
         if existing_revision == new_revision:
             return "existing"
-        
+
         # Revision has changed, proceed with updates
         updated = False
 
@@ -301,15 +333,15 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
         if existing_item.item_name != item_name:
             existing_item.item_name = item_name
             updated = True
-        
+
         if existing_item.description != item_description:
             existing_item.description = item_description
             updated = True
-        
+
         if existing_item.item_group != item_group:
             existing_item.item_group = item_group
             updated = True
-        
+
         if uom and existing_item.stock_uom != uom:
             existing_item.stock_uom = uom
             updated = True
@@ -318,31 +350,31 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
         if hsn_code and existing_item.get("gst_hsn_code") != hsn_code:
             existing_item.gst_hsn_code = hsn_code
             updated = True
-        
+
         if normalized_material and existing_item.get("custom_material") != normalized_material:
             existing_item.custom_material = normalized_material
             updated = True
-        
+
         if type_of_material and existing_item.get("custom_type_of_material") != type_of_material:
             existing_item.custom_type_of_material = type_of_material
             updated = True
-        
+
         if surface_treatment and existing_item.get("custom_class_name") != surface_treatment:
             existing_item.custom_class_name = surface_treatment
             updated = True
-        
+
         if weight and existing_item.get("custom_last_updating_of") != weight:
             existing_item.custom_last_updating_of = weight
             updated = True
-        
+
         if part_number and existing_item.get("custom_excode") != part_number:
             existing_item.custom_excode = part_number
             updated = True
-        
+
         if manufacturer and existing_item.get("custom_item_short_description") != manufacturer:
             existing_item.custom_item_short_description = manufacturer
             updated = True
-        
+
         # Update revision number (we know it's changed at this point)
         if new_revision is not None:
             existing_item.custom_revision_no = new_revision
@@ -350,12 +382,13 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
 
         # Update item defaults for expense account if needed
         if default_expense_account:
-            existing_defaults = [d for d in existing_item.get("item_defaults", []) 
-                               if d.company == "Clevertech Packaging Automation Solutions Pvt. Ltd."]
-            
+            _company = get_default_company()
+            existing_defaults = [d for d in existing_item.get("item_defaults", [])
+                               if d.company == _company]
+
             if not existing_defaults:
                 existing_item.append("item_defaults", {
-                    "company": "Clevertech Packaging Automation Solutions Pvt. Ltd.",
+                    "company": _company,
                     "expense_account": default_expense_account
                 })
                 updated = True
@@ -426,7 +459,7 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
     # Add default expense account to item defaults
     if default_expense_account:
         item.append("item_defaults", {
-            "company": "Clevertech Packaging Automation Solutions Pvt. Ltd.",
+            "company": get_default_company(),
             "expense_account": default_expense_account
         })
 
@@ -471,8 +504,22 @@ def ensure_item_exists(item_code, description, extended_description, uom, row_nu
 
 
 # ================= BOM =================
-def create_bom_recursive(node, project, ws, image_loader, root_level=None):
-    """Create BOMs recursively, creating child BOMs first (bottom-up)"""
+def create_bom_recursive(node, project, ws, image_loader, root_level=None, cm_bom_hashes=None):
+    """Create BOMs recursively, creating child BOMs first (bottom-up).
+
+    Args:
+        cm_bom_hashes: Optional dict {item_code: bom_structure_hash} from the uploading
+            machine's Component Masters. If provided, a CM-level retain check runs before
+            the global check: if Excel hash == CM hash → return "retain" so that
+            _link_boms_to_component_masters skips updating active_bom for this item,
+            keeping the machine's current BOM version even if a newer global version exists.
+
+    Returns:
+        True  — new BOM was created (or a new version was created)
+        False — BOM skipped because global active BOM hash already matches Excel
+        "retain" — CM hash matched Excel hash; this machine's BOM is unchanged,
+                   do NOT update active_bom to the global default
+    """
 
     item_code = node["item_code"]
     debug_info = [f"=== create_bom_recursive: {item_code} ==="]
@@ -499,7 +546,7 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
     # First, recursively create BOMs for all children that have sub-assemblies
     for child in node["children"]:
         if child["children"]:  # If child has its own children, it needs a BOM
-            create_bom_recursive(child, project, ws, image_loader, child["level"])
+            create_bom_recursive(child, project, ws, image_loader, child["level"], cm_bom_hashes=cm_bom_hashes)
 
     # Only create BOM if this item has children (raw materials)
     if not node["children"]:
@@ -525,6 +572,16 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
     debug_info.append(f"children_count: {len(node['children'])}")
     debug_info.append(f"new_hash: {new_hash}")
 
+    # Machine-level retain check: if the uploading machine's CM already has a BOM
+    # whose structure matches this Excel → keep the CM's current BOM version.
+    # This prevents Machine A's active_bom from being upgraded to the global default
+    # when Machine A's Excel hasn't changed (even if another machine created a newer version).
+    if cm_bom_hashes is not None and cm_bom_hashes.get(item_code) == new_hash:
+        debug_info.append(f"cm_hash: {cm_bom_hashes[item_code]}")
+        debug_info.append("ACTION: RETAIN (CM hash matches Excel — machine-level retain)")
+        frappe.log_error(title=f"DEBUG: BOM Retain - {item_code}", message="\n".join(debug_info))
+        return "retain"
+
     if existing_bom:
         debug_info.append(f"existing_bom: {existing_bom.name}")
         debug_info.append(f"existing_hash: {existing_bom.custom_bom_structure_hash}")
@@ -541,14 +598,29 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
         debug_info.append("existing_bom: None")
         debug_info.append("ACTION: CREATE NEW BOM")
 
+    # Before creating, check if any active BOM (non-default) already has this structure.
+    # Handles the case where multiple BOM versions exist but the default doesn't match Excel —
+    # reuse the matching non-default rather than creating a duplicate (which before_insert
+    # would reject anyway, leaving the CM with no BOM linked).
+    matching_active = frappe.db.get_value(
+        "BOM",
+        {"item": item_code, "is_active": 1, "docstatus": 1, "custom_bom_structure_hash": new_hash},
+        "name",
+        order_by="creation desc",
+    )
+    if matching_active:
+        debug_info.append(f"ACTION: REUSE non-default BOM {matching_active} (hash match)")
+        frappe.log_error(title=f"DEBUG: BOM Reuse - {item_code}", message="\n".join(debug_info))
+        return ("reuse", matching_active)
+
     frappe.log_error(title=f"DEBUG: BOM Create - {item_code}", message="\n".join(debug_info))
 
-    # Create BOM for current node (new or version change)
+    # Create BOM for current node (new or version change).
+    # BOMs are globally unique — no project field — so one canonical BOM per item.
     bom = frappe.get_doc({
         "doctype": "BOM",
         "item": node["item_code"],
         "quantity": 1,
-        "project": project,
         "is_active": 1,
         "is_default": 1
     })
@@ -556,6 +628,10 @@ def create_bom_recursive(node, project, ws, image_loader, root_level=None):
     # Add State field to BOM if present
     if node.get("state"):
         bom.custom_state = node["state"]
+
+    # Add Revision field to BOM if present
+    if node.get("revision"):
+        bom.custom_revision = node["revision"]
 
     # Add ONLY direct children (not grandchildren)
     for child in node["children"]:

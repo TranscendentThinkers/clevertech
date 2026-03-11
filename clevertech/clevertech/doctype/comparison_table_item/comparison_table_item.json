@@ -18,7 +18,8 @@
   "supplier_grand_totals",
   "column_break_nslt",
   "last_purchase_rate",
-  "supplier_rates"
+  "supplier_rates",
+  "material_request"
  ],
  "fields": [
   {
@@ -85,13 +86,19 @@
    "fieldname": "supplier_grand_totals",
    "fieldtype": "Text",
    "label": "Supplier Grand Totals"
+  },
+  {
+   "fieldname": "material_request",
+   "fieldtype": "Link",
+   "label": "Material Request",
+   "options": "Material Request"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-02-03 13:30:16.846219",
+ "modified": "2026-03-05 14:48:10.566901",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Comparison Table Item",

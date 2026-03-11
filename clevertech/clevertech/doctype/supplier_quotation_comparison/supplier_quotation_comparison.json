@@ -6,6 +6,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "details_tab",
   "request_for_quotation",
   "created_by",
   "column_break_anqr",
@@ -21,20 +22,24 @@
   "section_break_bdka",
   "fetch_report",
   "comparison_report",
-  "comparison_table",
   "section_break_vnpi",
   "attached_files",
   "section_break_prve",
   "supplier_selection_table",
+  "clear_links",
   "section_break_wqir",
   "grand_total",
-  "amended_from"
+  "amended_from",
+  "more_info_tab",
+  "additional_info_section",
+  "comparison_table"
  ],
  "fields": [
   {
    "fieldname": "request_for_quotation",
    "fieldtype": "Link",
    "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Request for Quotation",
    "options": "Request for Quotation",
    "reqd": 1
@@ -50,6 +55,7 @@
    "label": "Comparison Report"
   },
   {
+   "allow_on_submit": 1,
    "fieldname": "supplier_selection_table",
    "fieldtype": "Table",
    "label": "Supplier Selection Table",
@@ -133,13 +139,6 @@
    "search_index": 1
   },
   {
-   "fieldname": "comparison_table",
-   "fieldtype": "Table",
-   "hidden": 1,
-   "label": "Comparison Table",
-   "options": "Comparison Table Item"
-  },
-  {
    "fieldname": "required_by_in_days",
    "fieldtype": "Int",
    "label": "Required By In Days"
@@ -156,13 +155,43 @@
   {
    "fieldname": "column_break_dfqv",
    "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "details_tab",
+   "fieldtype": "Tab Break",
+   "label": "Details",
+   "read_only": 1
+  },
+  {
+   "fieldname": "more_info_tab",
+   "fieldtype": "Tab Break",
+   "label": "More Info"
+  },
+  {
+   "fieldname": "comparison_table",
+   "fieldtype": "Table",
+   "label": "Comparison Table",
+   "options": "Comparison Table Item",
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "additional_info_section",
+   "fieldtype": "Section Break",
+   "label": "Additional Info"
+  },
+  {
+   "fieldname": "clear_links",
+   "fieldtype": "Button",
+   "hidden": 1,
+   "label": "Clear Links"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-02-17 13:02:49.293873",
+ "modified": "2026-03-06 15:05:03.912599",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",

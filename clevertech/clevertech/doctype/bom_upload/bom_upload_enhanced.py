@@ -591,13 +591,16 @@ def create_component_masters_for_all_items(tree, project, machine_code):
             }
 
             # Make/Buy defaults by item code prefix:
-            # M, G codes → Make (assemblies/sub-assemblies manufactured in-house)
-            # D codes    → blank (user sets manually, can be Make or Buy)
-            # All others → Buy (raw materials / purchased components)
+            # M, G codes       → Make (assemblies/sub-assemblies manufactured in-house)
+            # D codes (assembly)→ blank (ambiguous — could be make or buy, user decides)
+            # D codes (leaf)   → Buy (purchased component, same as any raw material)
+            # All others        → Buy (raw materials / purchased components)
+            # Note: applies to NEW CMs only — existing CMs are never overwritten here
+            #       (merge logic only updates make_or_buy if Excel explicitly has a value)
             if item_code_upper.startswith(("M", "G")):
                 default_make_or_buy = "Make"
             elif item_code_upper.startswith("D"):
-                default_make_or_buy = ""
+                default_make_or_buy = "" if is_assembly else "Buy"
             else:
                 default_make_or_buy = "Buy"
 
@@ -1693,7 +1696,7 @@ def _create_bom_for_node(node, project, can_create_codes, ws, image_loader):
     return created, skipped, failed, errors
 
 
-def _link_boms_to_component_masters(project):
+def _link_boms_to_component_masters(project, retained_items=None, machine_code=None, reuse_boms=None):
     """
     After BOMs are created, link active_bom back to Component Masters.
     Also populate BOM Usage for linked BOMs (since on_bom_submit doesn't
@@ -1704,51 +1707,75 @@ def _link_boms_to_component_masters(project):
     the BOM may have a different project set, so on_bom_submit wouldn't
     update this project's CM.
 
-    Design: BOMs are shared across projects (no duplicates). When a version
-    change is needed, a new BOM is created only for the affected project.
+    Design: BOMs are globally unique (no duplicates). When a version
+    change is needed, a new BOM is created. Machine-level retain: if
+    retained_items is provided, skip updating active_bom for those items
+    so that the uploading machine keeps its current BOM version unchanged.
+
+    Args:
+        retained_items: Optional set of item_codes where create_bom_recursive
+            returned "retain". active_bom for these CMs must NOT be updated.
+        machine_code: Optional — restrict updates to CMs for this machine only.
+            Pass this from Phase 1 to prevent cross-machine contamination
+        reuse_boms: Optional dict {item_code: bom_name} — items where create_bom_recursive
+            found a matching non-default active BOM to reuse. Link CM to that specific BOM
+            instead of the default.
+            (e.g. Machine A's upload updating Machine B's active_bom).
     """
-    # Find ALL Component Masters that have BOMs (not just those without active_bom)
-    # This ensures we update active_bom even if it was pointing to an old/wrong BOM
+    if retained_items is None:
+        retained_items = set()
+    if reuse_boms is None:
+        reuse_boms = {}
+
+    filters = {"project": project, "has_bom": 1}
+    if machine_code:
+        filters["machine_code"] = machine_code
+
     cms = frappe.get_all(
         "Project Component Master",
-        filters={
-            "project": project,
-            "has_bom": 1,
-            # Removed "active_bom not set" filter - process ALL CMs with has_bom=1
-        },
-        fields=["name", "item_code", "active_bom"],  # Include current active_bom
+        filters=filters,
+        fields=["name", "item_code", "active_bom"],
     )
 
     # Track BOMs that were linked (not created) - need to populate BOM Usage for these
     linked_boms = []
 
     for cm_data in cms:
-        # Find the active default BOM for this item (check with project first)
-        bom_name = frappe.db.get_value(
-            "BOM",
-            {
-                "item": cm_data.item_code,
-                "project": project,
-                "is_active": 1,
-                "is_default": 1,
-                "docstatus": 1,
-            },
-            "name",
-        )
+        # Machine-level retain: this machine's BOM was explicitly retained (Excel hash ==
+        # CM hash), so do not update active_bom to the global default BOM.
+        if cm_data.item_code in retained_items:
+            continue
 
-        if not bom_name:
-            # Also check without project filter (BOM may belong to another project
-            # but can be shared - this is the "copy-on-write" approach)
+        # If this item was matched to a specific non-default active BOM, use that directly.
+        # Otherwise find the active default BOM (check with project first).
+        if cm_data.item_code in reuse_boms:
+            bom_name = reuse_boms[cm_data.item_code]
+        else:
             bom_name = frappe.db.get_value(
                 "BOM",
                 {
                     "item": cm_data.item_code,
+                    "project": project,
                     "is_active": 1,
                     "is_default": 1,
                     "docstatus": 1,
                 },
                 "name",
             )
+
+            if not bom_name:
+                # Also check without project filter (BOM may belong to another project
+                # but can be shared - this is the "copy-on-write" approach)
+                bom_name = frappe.db.get_value(
+                    "BOM",
+                    {
+                        "item": cm_data.item_code,
+                        "is_active": 1,
+                        "is_default": 1,
+                        "docstatus": 1,
+                    },
+                    "name",
+                )
 
         if bom_name:
             # Only update if active_bom is different (avoid unnecessary saves)

@@ -1,8 +1,58 @@
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, add_days, add_months, nowdate
+
+
+def set_payment_schedule(doc):
+    """
+    Mimics ERPNext's standard payment schedule population (as done in Purchase Order)
+    but writes into doc.custom_payment_schedule instead of doc.payment_schedule.
+    """
+    if not doc.custom_payment_terms_template:
+        return
+
+    template = frappe.get_doc("Payment Terms Template", doc.custom_payment_terms_template)
+    doc.custom_payment_schedule = []  # Clear existing rows
+
+    grand_total = flt(doc.grand_total or 0)
+    posting_date = doc.transaction_date or nowdate()
+
+    for term in template.terms:
+        # Calculate due date
+        if term.due_date_based_on == "Day(s) after invoice date":
+            due_date = add_days(posting_date, term.credit_days)
+        elif term.due_date_based_on == "Day(s) after the end of the invoice month":
+            due_date = add_days(
+                frappe.utils.get_last_day(posting_date), term.credit_days
+            )
+        elif term.due_date_based_on == "Month(s) after the end of the invoice month":
+            due_date = add_months(
+                frappe.utils.get_last_day(posting_date), term.credit_months
+            )
+        else:
+            due_date = add_days(posting_date, term.credit_days or 0)
+
+        # Calculate payment amount
+        if term.invoice_portion:
+            payment_amount = flt(grand_total * term.invoice_portion / 100, 2)
+        else:
+            payment_amount = 0.0
+
+        doc.append("custom_payment_schedule", {
+            "payment_term": term.payment_term,
+            "description": term.description,
+            "due_date": due_date,
+            "invoice_portion": term.invoice_portion,
+            "payment_amount": payment_amount,
+            "mode_of_payment": term.mode_of_payment or "",
+        })
+
 
 def validate(doc, method):
     doc.custom_payment_terms_template = frappe.db.get_value("Supplier", doc.supplier, "payment_terms")
+
+    # Populate custom payment schedule based on the fetched template
+    set_payment_schedule(doc)
+
     # Collect all Material Requests linked in RFQ Items
     mr_list = list({d.request_for_quotation for d in doc.items if d.request_for_quotation})
     if not mr_list:
@@ -58,8 +108,6 @@ def validate(doc, method):
     # ) or 0
     # consumed_budget = flt(submitted_total) + flt(doc.grand_total or 0)
     # doc.custom_consumed_budget = consumed_budget
-
-
 # Budget validation on submit commented out
 # def before_submit(doc, method):
 #     allocated_budget = flt(doc.custom_allocated_budget or 0)
@@ -78,8 +126,6 @@ def validate(doc, method):
 #     #     frappe.throw(
 #     #         f"The following Request For Quotation items are missing in the Supplier Quotation: {missing_list}"
 #     #     )
-
-
 # Budget data fetch function commented out
 # @frappe.whitelist()
 # def get_project_budget_data(project, current_sq=None, current_sq_total=0):

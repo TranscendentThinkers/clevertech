@@ -7,25 +7,34 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
         }
         last_docname = frm.doc.name;
 
+        // Hide comparison_table visually — must NOT be hidden at doctype level
+        frm.toggle_display('comparison_table', false);
+
         calculate_grand_total(frm);
+        set_supplier_filter(frm);
+
+        if (frm.doc.__islocal) return;
+
+        // Show clear_links button only after submit
+        //if (frm.doc.docstatus === 1) {
+        //    frm.toggle_display('clear_links', true);
+        //} else {
+        //    frm.toggle_display('clear_links', false);
+        //}
 
         if (frm.doc.comparison_table && frm.doc.comparison_table.length > 0) {
             render_comparison_from_table(frm);
         }
-
-        set_supplier_filter(frm);
     },
 
     request_for_quotation: function(frm) {
         if (frm.fields_dict.comparison_report) {
             frm.fields_dict.comparison_report.$wrapper.empty();
         }
-
         set_supplier_filter(frm);
     },
 
     required_by_in_days: function(frm) {
-        // Calculate required_by_date in real-time when required_by_in_days changes
         if (frm.doc.required_by_in_days && frm.doc.required_by_in_days > 0) {
             let required_by_date = frappe.datetime.add_days(frappe.datetime.get_today(), frm.doc.required_by_in_days);
             frm.set_value('required_by_date', required_by_date);
@@ -41,7 +50,6 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
             frm.save().then(() => {
                 generate_comparison_report(frm);
             }).catch((error) => {
-                // Save failed due to validation - don't proceed
                 console.log("Validation failed, not generating report");
             });
         } else {
@@ -51,7 +59,31 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
 
     validate: function(frm) {
         validate_supplier_reason(frm);
-    }
+    },
+
+    clear_links: function(frm) {
+        frappe.confirm(
+            __('This will clear all Purchase Order and Supplier Quotation references from the selection table. Are you sure?'),
+            function() {
+                frappe.call({
+                    method: "clevertech.clevertech.doctype.supplier_quotation_comparison.supplier_quotation_comparison.clear_selection_table_links",
+                    args: { docname: frm.doc.name },
+                    freeze: true,
+                    freeze_message: __("Clearing links..."),
+                    callback: function(r) {
+                        if (!r.exc) {
+                            frappe.show_alert({
+                                message: __("Purchase Order and Supplier Quotation links cleared successfully"),
+                                indicator: "green"
+                            }, 4);
+                            frm.reload_doc();
+                        }
+                    }
+                });
+            }
+        );
+    },
+
 });
 
 function validate_supplier_reason(frm) {
@@ -59,22 +91,50 @@ function validate_supplier_reason(frm) {
         return;
     }
 
-    let errors = [];
+    let reason_errors = [];
 
     frm.doc.supplier_selection_table.forEach(function(row, index) {
         if (row.suggested_supplier && row.supplier) {
             if (row.suggested_supplier.trim() !== row.supplier.trim()) {
                 if (!row.reason || row.reason.trim() === '') {
-                    errors.push(`Row ${index + 1} (${row.item_code || 'Item'}): Reason is mandatory when changing supplier from "${row.suggested_supplier}" to "${row.supplier}"`);
+                    reason_errors.push(`Row ${index + 1} (${row.item_code || 'Item'}): Reason is mandatory when changing supplier from "${row.suggested_supplier}" to "${row.supplier}"`);
                 }
             }
         }
     });
 
-    if (errors.length > 0) {
+    if (reason_errors.length > 0) {
         frappe.msgprint({
             title: __('Validation Error'),
-            message: __('Please provide reason for supplier changes:') + '<br><br>' + errors.join('<br>'),
+            message: __('Please provide reason for supplier changes:') + '<br><br>' + reason_errors.join('<br>'),
+            indicator: 'red'
+        });
+        frappe.validated = false;
+    }
+
+    // Only check rates when submitting
+    if (cur_frm.is_submitting) {
+        validate_rates_before_submit(frm);
+    }
+}
+
+function validate_rates_before_submit(frm) {
+    if (!frm.doc.supplier_selection_table) {
+        return;
+    }
+
+    let rate_errors = [];
+
+    frm.doc.supplier_selection_table.forEach(function(row, index) {
+        if (!row.supplier || !row.supplier_quotation || !row.rate || row.rate === 0) {
+            rate_errors.push(`Row ${index + 1} (${row.item_code || 'Item'}): No valid supplier or rate selected`);
+        }
+    });
+
+    if (rate_errors.length > 0) {
+        frappe.msgprint({
+            title: __('Cannot Submit'),
+            message: __('The following items have no valid supplier/rate and cannot be used to create Purchase Orders:<br><br>') + rate_errors.join('<br>'),
             indicator: 'red'
         });
         frappe.validated = false;
@@ -128,6 +188,9 @@ frappe.ui.form.on("Supplier Selection Item", {
     item_code: function(frm, cdt, cdn) {
         fetch_supplier_data(frm, cdt, cdn);
     },
+    material_request: function(frm, cdt, cdn) {
+        fetch_supplier_data(frm, cdt, cdn);
+    },
     qty: function(frm, cdt, cdn) {
         calculate_amount(frm, cdt, cdn);
         calculate_grand_total(frm);
@@ -157,7 +220,8 @@ function fetch_supplier_data(frm, cdt, cdn) {
             args: {
                 rfq: rfq,
                 supplier: row.supplier,
-                item_code: row.item_code
+                item_code: row.item_code,
+                material_request: row.material_request || ""
             },
             callback: function(r) {
                 if (r.message) {
@@ -168,6 +232,7 @@ function fetch_supplier_data(frm, cdt, cdn) {
                     frappe.model.set_value(cdt, cdn, "total_tax", r.message.total_tax || 0);
                     frappe.model.set_value(cdt, cdn, "delivery_term", r.message.delivery_term || "");
                     frappe.model.set_value(cdt, cdn, "payment_terms_template", r.message.payment_terms_template || "");
+                    frappe.model.set_value(cdt, cdn, "notes", r.message.notes || "");
 
                     calculate_grand_total(frm);
                 } else {
@@ -202,8 +267,7 @@ function calculate_grand_total(frm) {
     let grand_total = 0;
 
     frm.doc.supplier_selection_table.forEach(function(row) {
-        let row_total = (row.amount || 0) + (row.total_tax || 0);
-        grand_total += row_total;
+        grand_total += (row.amount || 0);
     });
 
     frm.set_value('grand_total', grand_total);
@@ -225,7 +289,7 @@ function render_comparison_from_table(frm) {
         return;
     }
 
-    let columns = ["Item Code", "Description", "Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"];
+    let columns = ["Item Code", "Material Request", "Description", "Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"];
     let supplierColumns = [];
 
     let firstDataRow = frm.doc.comparison_table.find(r => r.item_code !== "TOTAL");
@@ -233,6 +297,7 @@ function render_comparison_from_table(frm) {
         try {
             let supplierRates = JSON.parse(firstDataRow.supplier_rates);
             Object.keys(supplierRates).forEach(supplierName => {
+                if (supplierName.startsWith("__")) return;
                 let col = `${supplierName.trim()} - Rate`;
                 columns.push(col);
                 supplierColumns.push({ name: supplierName.trim(), col: col });
@@ -244,10 +309,14 @@ function render_comparison_from_table(frm) {
 
     let data = [];
     let lowestRateSuppliers = {};
+    let naSuppliers = {};
+
+    const specialRows = ["TOTAL", "PAYMENT_TERMS", "DELIVERY_TERMS", "NOTES", "ADDITIONAL_NOTES"];
 
     frm.doc.comparison_table.forEach(row => {
         let dataRow = {
             "Item Code": row.item_code || "",
+            "Material Request": row.material_request || "",
             "Description": row.description || "",
             "Qty": row.qty || "",
             "UOM": row.uom || "",
@@ -268,6 +337,7 @@ function render_comparison_from_table(frm) {
             try {
                 let supplierRates = JSON.parse(row.supplier_rates);
                 Object.keys(supplierRates).forEach(supplierName => {
+                    if (supplierName.startsWith("__")) return;
                     dataRow[`${supplierName.trim()} - Rate`] = supplierRates[supplierName];
                 });
             } catch (e) {
@@ -277,34 +347,53 @@ function render_comparison_from_table(frm) {
 
         data.push(dataRow);
 
-        if (row.item_code && row.item_code !== "TOTAL" && row.supplier_rates) {
+        // Use composite key item_code|material_request for lowest rate tracking
+        const rowKey = `${row.item_code}|${row.material_request || ""}`;
+        if (row.item_code && !specialRows.includes(row.item_code) && row.supplier_rates) {
             try {
                 let supplierRates = JSON.parse(row.supplier_rates);
-                let lowestName = null;
-                let lowestRate = Infinity;
+                let itemNaSuppliers = [];
 
                 Object.keys(supplierRates).forEach(supplierName => {
+                    if (supplierName.startsWith("__")) return;
                     let rate = supplierRates[supplierName];
-                    if (rate !== "N/A" && rate !== null && rate !== undefined && !isNaN(Number(rate))) {
-                        if (Number(rate) < lowestRate) {
-                            lowestRate = Number(rate);
-                            lowestName = supplierName.trim();
-                        }
+                    if (rate === "N/A" || rate === null || rate === undefined || rate === 0 || rate === "0") {
+                        itemNaSuppliers.push(supplierName.trim());
                     }
                 });
 
-                if (lowestName !== null) {
-                    lowestRateSuppliers[row.item_code] = {
-                        supplier: lowestName
-                    };
+                // Use Python-determined lowest supplier via __lowest__ marker in supplier_rates
+                // This is set by Python and handles the grand total tiebreak correctly
+                const lowestFromPython = supplierRates["__lowest__"];
+                if (lowestFromPython) {
+                    lowestRateSuppliers[rowKey] = { supplier: lowestFromPython.trim() };
+                } else {
+                    // Fallback: scan rates numerically (no tiebreak)
+                    let lowestName = null;
+                    let lowestRate = Infinity;
+                    Object.keys(supplierRates).forEach(supplierName => {
+                        if (supplierName.startsWith("__")) return;
+                        let rate = supplierRates[supplierName];
+                        if (!isNaN(Number(rate)) && Number(rate) > 0 && Number(rate) < lowestRate) {
+                            lowestRate = Number(rate);
+                            lowestName = supplierName.trim();
+                        }
+                    });
+                    if (lowestName !== null) {
+                        lowestRateSuppliers[rowKey] = { supplier: lowestName };
+                    }
+                }
+
+                if (itemNaSuppliers.length > 0) {
+                    naSuppliers[rowKey] = itemNaSuppliers;
                 }
             } catch (e) {
-                console.error("Error determining lowest rate for item:", row.item_code, e);
+                console.error("Error determining lowest/NA rates for item:", row.item_code, e);
             }
         }
     });
 
-    const html = build_html_table(columns, data, lowestRateSuppliers, {});
+    const html = build_html_table(columns, data, lowestRateSuppliers, naSuppliers, {});
     $wrapper.html(html);
 }
 
@@ -313,6 +402,7 @@ function generate_comparison_report(frm) {
     const $wrapper = frm.fields_dict.comparison_report.$wrapper;
     $wrapper.empty();
     $wrapper.html("<p>Loading comparison...</p>");
+
     frappe.call({
         method: "clevertech.clevertech.doctype.supplier_quotation_comparison.supplier_quotation_comparison.get_comparison_report_data",
         args: {
@@ -326,31 +416,14 @@ function generate_comparison_report(frm) {
                 $wrapper.html("<p>No data available</p>");
                 return;
             }
-            frappe.call({
-                method: 'frappe.client.get',
-                args: {
-                    doctype: 'Supplier Quotation Comparison',
-                    name: frm.doc.name
-                },
-                callback: function(r) {
-                    if (r.message) {
-                        if (r.message.supplier_selection_table) {
-                            frm.doc.supplier_selection_table = r.message.supplier_selection_table;
-                            frm.fields_dict.supplier_selection_table.grid.refresh();
-                        }
-                        if (r.message.comparison_table) {
-                            frm.doc.comparison_table = r.message.comparison_table;
-                            render_comparison_from_table(frm);
-                        }
-                        calculate_grand_total(frm);
-                        frm.reload_doc();
-                        frappe.show_alert({
-                            message: __('Comparison report generated and saved successfully'),
-                            indicator: 'green'
-                        }, 3);
-                    }
-                }
-            });
+
+            // Reload doc so frm.doc.comparison_table is fresh from DB
+            frm.reload_doc();
+
+            frappe.show_alert({
+                message: __('Comparison report generated and saved successfully'),
+                indicator: 'green'
+            }, 3);
         },
         error: function(r) {
             $wrapper.html("<p>Error generating comparison report. Please try again.</p>");
@@ -363,7 +436,14 @@ function generate_comparison_report(frm) {
     });
 }
 
-function build_html_table(columns, data, lowest_rate_suppliers, supplier_name_to_id) {
+const SPECIAL_ROW_LABELS = {
+    "TOTAL": "Total",
+    "PAYMENT_TERMS": "Payment Terms",
+    "DELIVERY_TERMS": "Delivery Terms",
+    "NOTES": "Notes"
+};
+
+function build_html_table(columns, data, lowest_rate_suppliers, na_suppliers, supplier_name_to_id) {
     const tableId = `comparison-table-${Math.random().toString(36).substr(2, 9)}`;
 
     let html = `
@@ -409,6 +489,25 @@ function build_html_table(columns, data, lowest_rate_suppliers, supplier_name_to
                 background-color: #d4edda;
                 font-weight: 600;
                 color: #155724;
+            }
+            .table-scroll-wrapper td.na-rate {
+                background-color: #f8d7da;
+                font-weight: 600;
+                color: #721c24;
+            }
+            .table-scroll-wrapper tr.extra-info-row {
+                background-color: #fffbf0;
+                border-top: 1px solid #e0d9c8;
+            }
+            .table-scroll-wrapper td.special-row-label {
+                font-weight: 600;
+                background-color: #f5f0e8;
+                color: #5a4a2a;
+            }
+            .table-scroll-wrapper td.extra-info-cell {
+                white-space: pre-wrap;
+                font-size: 12px;
+                color: #4a4a4a;
             }
             .table-scroll-wrapper tr.total-row {
                 font-weight: 700;
@@ -456,9 +555,16 @@ function build_html_table(columns, data, lowest_rate_suppliers, supplier_name_to
     html += `</tr></thead><tbody>`;
 
     data.forEach((row, rowIndex) => {
-        const isTotalRow = rowIndex === data.length - 1 && row["Item Code"] === "TOTAL";
-        const rowClass = isTotalRow ? ' class="total-row"' : '';
         const itemCode = (row["Item Code"] || "").trim();
+        const materialRequest = (row["Material Request"] || "").trim();
+        const rowKey = `${itemCode}|${materialRequest}`;
+        const isSpecialRow = SPECIAL_ROW_LABELS.hasOwnProperty(itemCode);
+        const isTotalRow = itemCode === "TOTAL";
+        const isExtraRow = ["PAYMENT_TERMS", "DELIVERY_TERMS", "NOTES"].includes(itemCode);
+
+        let rowClass = '';
+        if (isTotalRow) rowClass = ' class="total-row"';
+        else if (isExtraRow) rowClass = ' class="extra-info-row"';
 
         html += `<tr${rowClass}>`;
         columns.forEach((col, idx) => {
@@ -468,15 +574,37 @@ function build_html_table(columns, data, lowest_rate_suppliers, supplier_name_to
             }
 
             let tdClass = '';
-            if (idx === 0) {
-                tdClass = 'item-code';
-            } else if (!isTotalRow && col.includes(' - Rate') && lowest_rate_suppliers[itemCode]) {
-                const supplierName = col.replace(' - Rate', '').trim();
-                const lowestSupplier = (lowest_rate_suppliers[itemCode].supplier || '').trim();
 
-                if (supplierName === lowestSupplier && String(val).trim() !== "N/A") {
+            if (idx === 0) {
+                if (isSpecialRow) {
+                    val = SPECIAL_ROW_LABELS[itemCode];
+                    tdClass = 'special-row-label';
+                } else {
+                    tdClass = 'item-code';
+                }
+            } else if (isSpecialRow && col === "Material Request") {
+                val = "";
+            } else if (isSpecialRow && col === "Description") {
+                val = "";
+            } else if (isSpecialRow && ["Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"].includes(col)) {
+                val = "";
+            } else if (!isSpecialRow && col.includes(' - Rate')) {
+                const supplierName = col.replace(' - Rate', '').trim();
+                const strVal = String(val).trim();
+
+                const isNA = strVal === "N/A" || strVal === "" || strVal === "0" || strVal === "0.00";
+                const isLowest = lowest_rate_suppliers[rowKey] &&
+                    (lowest_rate_suppliers[rowKey].supplier || '').trim() === supplierName &&
+                    !isNA;
+
+                if (isNA) {
+                    tdClass = 'na-rate';
+                    val = "N/A";
+                } else if (isLowest) {
                     tdClass = 'lowest-rate';
                 }
+            } else if (isExtraRow && col.includes(' - Rate')) {
+                tdClass = 'extra-info-cell';
             }
 
             const tdClassAttr = tdClass ? ` class="${tdClass}"` : '';
