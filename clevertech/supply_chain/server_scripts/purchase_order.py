@@ -1,5 +1,42 @@
 import frappe
 
+def on_cancel(doc, method=None):
+    """Cancel linked SQ Comparison and SQ docs before Frappe's back-link check runs.
+    - SQC: custom doctype, PO link is in a child row — not discoverable by ERPNext Cancel All
+    - SQ: has purchase_order on its items — Frappe blocks PO cancel if SQ is still submitted
+    Both must be cancelled here (on_cancel fires before check_no_back_links_exist).
+    """
+    cancelled = []
+
+    # Step 1: cancel SQ Comparisons linked to this PO
+    sqc_names = frappe.db.sql("""
+        SELECT DISTINCT parent
+        FROM `tabSupplier Selection Item`
+        WHERE purchase_order = %s
+    """, doc.name, as_dict=True)
+
+    for row in sqc_names:
+        sqc = frappe.get_doc("Supplier Quotation Comparison", row.parent)
+        if sqc.docstatus == 1:
+            sqc.cancel()
+            cancelled.append(f"Supplier Quotation Comparison: {sqc.name}")
+
+    # Step 2: cancel Supplier Quotations linked to this PO via PO items
+    sq_names = list({i.supplier_quotation for i in doc.items if i.get("supplier_quotation")})
+    for sq_name in sq_names:
+        sq = frappe.get_doc("Supplier Quotation", sq_name)
+        if sq.docstatus == 1:
+            sq.cancel()
+            cancelled.append(f"Supplier Quotation: {sq.name}")
+
+    if cancelled:
+        frappe.msgprint(
+            "The following linked documents were also cancelled:<br>" + "<br>".join(cancelled),
+            title="Linked Documents Cancelled",
+            alert=True
+        )
+
+
 def validate(doc, method):
     # Collect all Material Requests linked in RFQ Items
     mr_list = list({d.supplier_quotation for d in doc.items if d.supplier_quotation})

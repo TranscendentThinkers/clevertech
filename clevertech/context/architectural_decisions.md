@@ -1385,3 +1385,58 @@ When Excel hash matches a non-default active BOM:
 
 **Fresh-project flow:** completely unaffected — `reuse_boms` is empty, all existing code paths unchanged.
 
+---
+
+## Decision: PO Cancel — Cascade to SQ Comparison and SQ
+
+**Date:** 2026-03-11
+**Status:** ✅ Implemented
+
+### Problem
+Cancelling a Purchase Order failed with a circular reference:
+- User clicked Cancel on PO → ERPNext showed "Cancel All" dialog (SQ Comparison + SQ linked)
+- User clicked Cancel All → ERPNext tried to cancel SQ → SQ checks back-links → finds PO still submitted → blocked
+- After partial fix (cancel SQ Comparison in on_cancel) → new error: Frappe's `check_no_back_links_exist` found SQ (submitted) still referencing PO via `Supplier Quotation Item.purchase_order` → blocked PO cancellation
+
+### Root Cause
+Two separate issues:
+1. **SQ Comparison** — custom doctype whose PO link lives in `tabSupplier Selection Item.purchase_order` (child row). ERPNext's standard Cancel All cannot discover child-row links → SQ Comparison never auto-cancelled.
+2. **SQ** — standard doctype but Frappe's `check_no_back_links_exist` (runs in `run_post_save_methods`) blocks PO cancel if SQ is still submitted. ERPNext Cancel All tries to cancel SQ first but SQ was blocked by PO (circular).
+
+### Key Frappe lifecycle insight
+`on_cancel` fires **before** `check_no_back_links_exist` inside `run_post_save_methods`. Cancelling both SQ Comparison and SQ inside `on_cancel` means by the time Frappe does the back-link check, neither references a submitted PO.
+
+### Solution
+Added `on_cancel` function to `supply_chain/server_scripts/purchase_order.py`:
+- Step 1: cancel all SQ Comparisons that reference this PO (via `tabSupplier Selection Item`)
+- Step 2: cancel all SQs referenced by PO items (via `doc.items[].supplier_quotation`)
+- Both check `docstatus == 1` before cancelling (idempotent)
+
+Registered in `hooks.py` as a list alongside existing `procurement_hooks.on_po_cancel`:
+```python
+"on_cancel": [
+    "clevertech.supply_chain.server_scripts.purchase_order.on_cancel",
+    "clevertech.project_component_master.procurement_hooks.on_po_cancel",
+],
+```
+
+Supply chain cancel runs first → procurement tracking cleanup runs second.
+
+### UI gap — "Cancel All" dialog cancels linked docs before PO
+After the server hook was in place, programmatic cancel (`po.cancel()`) worked but the UI still
+failed. Root cause: Frappe's "Cancel All" button calls `cancel_all_linked_docs` which cancels
+linked docs **first** (SQ before PO) → SQ blocked by PO still submitted → our hook never runs.
+
+**Fix:** Set `frm.ignore_doctypes_on_cancel_all` in `public/js/purchase_order.js` `onload`:
+```js
+frm.ignore_doctypes_on_cancel_all = ["Supplier Quotation", "Supplier Quotation Comparison"];
+```
+This tells Frappe's UI to skip SQ and SQC from the "Cancel All" flow → PO cancels directly →
+our `on_cancel` hook cascades to SQC and SQ in the correct order.
+
+**Atomicity:** both hooks run inside the same DB transaction. If either cascade cancel fails,
+the entire PO cancel rolls back.
+
+**UX:** After cancel, a `frappe.msgprint(alert=True)` lists which SQ Comparison and SQ docs
+were cancelled, so the user has visibility even though they no longer appear in the dialog.
+

@@ -6,6 +6,13 @@ frappe.ui.form.on('Purchase Order', {
         set_required_by_date(frm);
     },
     onload(frm) {
+        // Skip SQ and SQC from Frappe's "Cancel All" linked-doc flow.
+        // Our server-side on_cancel hook cancels them in the correct order
+        // (PO cancelled first, then cascade to SQ Comparison and SQ).
+        frm.ignore_doctypes_on_cancel_all = [
+            "Supplier Quotation",
+            "Supplier Quotation Comparison"
+        ];
         set_required_by_date(frm);
     },
     schedule_date(frm) {

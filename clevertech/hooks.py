@@ -80,7 +80,10 @@ doc_events = {
                 "clevertech.project_component_master.purchase_order_validation.validate_purchase_order_qty",
             ],
             "on_submit": "clevertech.project_component_master.procurement_hooks.on_po_submit",
-            "on_cancel": "clevertech.project_component_master.procurement_hooks.on_po_cancel",
+            "on_cancel": [
+                "clevertech.supply_chain.server_scripts.purchase_order.on_cancel",
+                "clevertech.project_component_master.procurement_hooks.on_po_cancel",
+            ],
         },
         "Material Request": {
             "before_validate": "clevertech.server_scripts.material_request.before_validate",
