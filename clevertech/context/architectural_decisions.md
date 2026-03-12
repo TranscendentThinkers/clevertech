@@ -1440,3 +1440,104 @@ the entire PO cancel rolls back.
 **UX:** After cancel, a `frappe.msgprint(alert=True)` lists which SQ Comparison and SQ docs
 were cancelled, so the user has visibility even though they no longer appear in the dialog.
 
+---
+
+### Decision N: BOM Upload Phase 1 — Background Job Architecture
+
+**Status:** 🔲 Designed, not yet implemented
+
+**Problem:** Large BOM upload files (e.g. SMR260016 — 1,306 rows) cause HTTP timeout during Phase 1 processing. The entire create_items + create_CMs + create_BOMs pipeline runs synchronously in a single HTTP request.
+
+**Immediate fix (deployed):** `bench config http_timeout 600` + nginx/supervisor reload. Sufficient for current file sizes.
+
+**Proper long-term fix — Background Job Wrapper:**
+
+#### Python (3 new functions, existing code untouched)
+
+1. **`create_boms_phase1_async(docname, confirmed, state_confirmed)`** — whitelisted, sync
+   - Parses Excel + runs BOTH pre-checks (state warnings + BOM version scan) synchronously
+   - Note: `_scan_for_bom_version_changes` is moved earlier here (reads-only, no writes) so both dialogs complete before enqueue
+   - Once both confirmed → calls `frappe.enqueue(_run_phase1_bg, queue="long", timeout=600, docname=docname)`
+   - Returns `{"status": "queued", "job_id": job.id}`
+
+2. **`_run_phase1_bg(docname)`** — background worker (not whitelisted)
+   - Calls `create_boms_phase1(docname, confirmed=1, state_confirmed=1)` — existing function, zero changes
+   - Stores result in `frappe.cache().set_value(f"phase1_result_{docname}", result, expires_in_sec=3600)`
+   - On exception: stores `{"status": "error", "error": str(e)}` in same cache key
+
+3. **`get_phase1_async_status(job_id, docname)`** — whitelisted, sync polling endpoint
+   - Uses `frappe.utils.background_jobs.get_job_status(job_id)` (Frappe v15 native)
+   - If finished/failed → reads result from `frappe.cache().get_value(f"phase1_result_{docname}")`
+   - Returns `{"status": "queued|started|finished|failed", "result": ...}`
+
+#### JS (new button + polling, existing JS untouched)
+
+- New button **"Create BOM - Phase 1 (Bg)"** alongside existing button
+- Same confirmation dialog flow (state warning → version change) — handled by `create_boms_phase1_async`
+- On `queued` response → disables button, shows "Processing in background..." indicator on form
+- Polls `get_phase1_async_status` every 5 seconds via `setInterval`
+- On `finished` → clears interval, renders same summary table as existing sync flow
+- On `failed` → clears interval, shows error message
+
+#### Key design decisions
+
+| Decision | Choice | Reason |
+|---|---|---|
+| Existing `create_boms_phase1` touched? | **No** | Called as-is with `confirmed=1, state_confirmed=1` |
+| Pre-check duplication? | Excel parsed twice (wrapper + bg job) | Acceptable — fast read vs heavy DB writes |
+| Result storage | `frappe.cache()` (Redis, 1hr TTL) | No schema change needed, Frappe-native |
+| Queue | `long` | Frappe's long queue for tasks > 300s |
+| Frappe version compatibility | v15.91.1 — uses `frappe.utils.background_jobs.get_job_status()` | Confirmed available |
+
+#### Trade-off Accepted
+- Excel file parsed twice per run (wrapper for pre-checks, background job for processing)
+- Two buttons on the form during transition period (sync for small files, async for large)
+- Background job result not visible in Frappe's standard job monitor UI (stored in cache, surfaced via polling)
+
+---
+
+### Decision N: Row-ID Matching for Supply Chain Cross-Doctype Validation
+
+**Problem:** Validation scripts (RFQ→MR, SQ→RFQ, PO→SQ) and the Supplier Quotation Comparison (SQC) doctype all used `{parent}_{item_code}` as a dict key for lookup maps. When the same item code appears multiple times in a document (e.g. two rows of the same item with different qtys in an MR), later rows silently overwrite earlier ones → wrong qty compared → validation failed incorrectly or rows were dropped.
+
+The same collision affected:
+- SQC `get_comparison_report_data()` — HTML table showed duplicate items collapsed into one
+- SQC Supplier Selection Table — only 1 row populated instead of 2
+- PO creation from SQC — second row silently dropped
+- Script Report `supplier_quotation_comparison_report.py` — same collapse in report output
+
+**Solution: Key all cross-doctype lookup maps by Frappe child row `name` (unique row ID)**
+
+Every child table row has an auto-generated unique `name` field. ERPNext stores cross-doctype row references:
+
+| Reference field | Points to |
+|---|---|
+| `RFQ Item.material_request_item` | `Material Request Item.name` |
+| `SQ Item.request_for_quotation_item` | `RFQ Item.name` |
+| `PO Item.supplier_quotation_item` | `SQ Item.name` |
+
+**Files changed:**
+
+| File | Key changed from | Key changed to |
+|---|---|---|
+| `supply_chain/server_scripts/request_for_quotation.py` | `{mr}_{item_code}` | `material_request_item` row name |
+| `supply_chain/server_scripts/supplier_quotation.py` | `{rfq}_{item_code}` | `request_for_quotation_item` row name |
+| `supply_chain/server_scripts/purchase_order.py` | `{sq}_{item_code}` | `supplier_quotation_item` row name |
+| `clevertech/doctype/supplier_quotation_comparison/supplier_quotation_comparison.py` | `(item_code, material_request)` tuple | `rfq_item.name` row ID |
+| `clevertech/doctype/supplier_quotation_comparison/supplier_quotation_comparison.js` | `${item_code}|${material_request}` rowKey | `__lowest_supplier__` embedded per dataRow |
+| `clevertech/report/supplier_quotation_comparison_report/supplier_quotation_comparison_report.py` | `{rfq}_{item_code}` | `rfq_item.name` row ID |
+
+New hidden fields added to child doctypes (required `bench migrate`):
+- `supplier_selection_item.rfq_item_row` (Data, hidden)
+- `comparison_table_item.rfq_item_row` (Data, hidden)
+
+**Why not sum qtys per item_code?**
+Summing would fix the reported validation failure but has an edge case: two rows with qty 5 and qty 3 would pass sum-level validation (total 8) even if one row had qty 10 (exceeding its individual MR row limit). Row-ID matching is precise and correct.
+
+**Trade-off Accepted:** Requires `request_for_quotation_item` / `supplier_quotation_item` fields to always be populated — enforced by the strict MR → RFQ → SQ → SQC → PO workflow.
+
+**Pattern for future reference:**
+- **Never** key cross-doctype lookup maps by `{parent}_{item_code}` — breaks when same item appears multiple times
+- **Always** key by the child row `name` field (unique Frappe row ID)
+- Use the cross-doctype reference field (e.g. `request_for_quotation_item`) to match rows across doctypes
+

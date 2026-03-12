@@ -168,7 +168,7 @@ frappe.ui.form.on('Material Request', {
                                 d.stock_uom = item.stock_uom;
                                 d.conversion_factor = 1;
                                 d.qty = item.qty;
-                                d.project = item.project;
+                                d.project = frm.doc.custom_project_;
                                 d.bom_no = values.bom;
                                 d.custom_bom_qty = item.qty;
                             });

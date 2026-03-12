@@ -198,6 +198,7 @@ class SupplierQuotationComparison(Document):
             supplier_quotation_map[sq_name].append({
                 "item_code": row.item_code,
                 "material_request": row.get("material_request") or "",
+                "rfq_item_row": row.get("rfq_item_row") or "",
                 "qty": row.qty or 0,
                 "rate": row.rate or 0,
                 "payment_terms_template": row.get("payment_terms_template"),
@@ -219,8 +220,8 @@ class SupplierQuotationComparison(Document):
             if po:
                 created_pos.append(po.name)
                 # Update selection table with PO reference
-                selected_item_keys = {(item["item_code"], item["material_request"]) for item in items}
-                add_po_reference(self, po, selected_item_keys)
+                selected_rfq_item_rows = {item["rfq_item_row"] for item in items if item.get("rfq_item_row")}
+                add_po_reference(self, po, selected_rfq_item_rows)
 
         # Save the document to persist PO references (using db_update to avoid re-triggering submit)
         for row in self.supplier_selection_table:
@@ -318,20 +319,21 @@ class SupplierQuotationComparison(Document):
         rfq_doc = frappe.get_doc("Request for Quotation", self.request_for_quotation)
         self.supplier_selection_table = []
 
-        # Populate the child table — include material_request from RFQ items
+        # Populate the child table — store rfq_item_row (row name) for precise row-level matching
         for row in rfq_doc.items:
             self.append("supplier_selection_table", {
                 "item_code": row.item_code,
-                "material_request": row.get("material_request") or ""
+                "material_request": row.get("material_request") or "",
+                "rfq_item_row": row.name
             })
 
 
 @frappe.whitelist()
-def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None):
+def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None, rfq_item_row=None):
     """
     Fetch the supplier quotation linked to the RFQ where supplier matches.
-    If item_code is provided, return rate/qty/amount for that item.
-    If material_request is also provided, match by both item_code and material_request.
+    If rfq_item_row is provided, match by RFQ item row ID (request_for_quotation_item) — precise.
+    Falls back to item_code + material_request match if rfq_item_row is not set.
     """
     if not rfq or not supplier:
         return None
@@ -359,17 +361,20 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None)
                         payment_terms_template = sq_doc.get("custom_payment_terms_template") or ""
                         notes = sq_doc.get("custom_note") or ""
 
-                        # Find the matching item — match by item_code AND material_request if provided
+                        # Match by rfq_item_row (precise) if provided, else fall back to item_code+MR
                         matched_item = None
                         for item in sq_doc.items:
-                            if item.item_code == item_code:
+                            if rfq_item_row:
+                                if item.get("request_for_quotation_item") == rfq_item_row:
+                                    matched_item = item
+                                    break
+                            elif item.item_code == item_code:
                                 if material_request:
                                     item_mr = item.get("material_request") or ""
                                     if item_mr == material_request:
                                         matched_item = item
                                         break
                                 else:
-                                    # No MR filter — take first match
                                     matched_item = item
                                     break
 
@@ -467,13 +472,13 @@ def get_comparison_report_data(docname):
         supplier_notes[supplier] = sq_doc.get("custom_note") or ""
 
     # Prepare item structure from RFQ
-    # Use (item_code, material_request) as composite key to support duplicate item codes
+    # Key by rfq_item.name (row ID) — handles duplicate item codes from same MR
     items_data = {}
     item_order = []  # preserve insertion order
 
     for rfq_item in rfq_doc.items:
         material_request = rfq_item.get("material_request") or ""
-        key = (rfq_item.item_code, material_request)
+        key = rfq_item.name  # unique row ID
 
         last_purchase = get_last_purchase_details(rfq_item.item_code)
 
@@ -484,6 +489,7 @@ def get_comparison_report_data(docname):
             description = strip_html_tags(description)
 
         items_data[key] = {
+            "rfq_item_row": rfq_item.name,
             "item_code": rfq_item.item_code,
             "material_request": material_request,
             "description": description,
@@ -494,7 +500,7 @@ def get_comparison_report_data(docname):
         }
         item_order.append(key)
 
-    # Track lowest rate supplier per (item_code, material_request) composite key
+    # Track lowest rate supplier per rfq_item_row
     lowest_rate_suppliers = {}
 
     # Iterate through suppliers that have quotations
@@ -506,8 +512,9 @@ def get_comparison_report_data(docname):
             continue
 
         for item in sq_doc.items:
-            item_mr = item.get("material_request") or ""
-            key = (item.item_code, item_mr)
+            # Match SQ item back to its RFQ item row via request_for_quotation_item
+            rfq_row_name = item.get("request_for_quotation_item") or ""
+            key = rfq_row_name
 
             if key in items_data:
                 items_data[key][supplier] = {
@@ -531,7 +538,6 @@ def get_comparison_report_data(docname):
                         current_grand_total = supplier_grand_totals.get(current["supplier"], 0) or 0
                         new_grand_total = supplier_grand_totals.get(supplier, 0) or 0
                         if item.rate < current["rate"]:
-                            # Strictly lower rate — replace
                             lowest_rate_suppliers[key] = {
                                 "supplier": supplier,
                                 "rate": item.rate,
@@ -540,7 +546,6 @@ def get_comparison_report_data(docname):
                                 "supplier_quotation": sq_name
                             }
                         elif item.rate == current["rate"] and new_grand_total < current_grand_total:
-                            # Same rate — prefer supplier with lower grand total
                             lowest_rate_suppliers[key] = {
                                 "supplier": supplier,
                                 "rate": item.rate,
@@ -554,8 +559,8 @@ def get_comparison_report_data(docname):
 
     grand_total = 0
 
-    for key, lowest_info in lowest_rate_suppliers.items():
-        item_code, material_request = key
+    for rfq_row_name, lowest_info in lowest_rate_suppliers.items():
+        item_info = items_data[rfq_row_name]
 
         # Fetch delivery_term, payment_terms, and notes from supplier quotation
         sq_delivery_term, sq_payment_terms, sq_notes = frappe.db.get_value(
@@ -565,8 +570,9 @@ def get_comparison_report_data(docname):
         )
 
         sqc.append("supplier_selection_table", {
-            "item_code": item_code,
-            "material_request": material_request,
+            "item_code": item_info["item_code"],
+            "material_request": item_info["material_request"],
+            "rfq_item_row": rfq_row_name,
             "suggested_supplier": lowest_info["supplier"],
             "supplier": lowest_info["supplier"],
             "supplier_quotation": lowest_info["supplier_quotation"],
@@ -592,9 +598,11 @@ def get_comparison_report_data(docname):
 
     for key in item_order:
         item_info = items_data[key]
-        item_code, material_request = key
+        item_code = item_info["item_code"]
+        material_request = item_info["material_request"]
 
         row_data = {
+            "rfq_item_row": key,
             "item_code": item_code,
             "material_request": material_request,
             "description": item_info.get("description", ""),
@@ -615,7 +623,6 @@ def get_comparison_report_data(docname):
                 supplier_rates[supplier_names[supplier]] = "N/A"
 
         # Embed the lowest supplier name directly in supplier_rates JSON
-        # so the JS doesn't need to rely on a separate child table field
         if key in lowest_rate_suppliers:
             lowest_supplier = lowest_rate_suppliers[key]["supplier"]
             lowest_display_name = supplier_names.get(lowest_supplier, lowest_supplier)
@@ -700,7 +707,8 @@ def get_comparison_report_data(docname):
     data = []
     for key in item_order:
         item_info = items_data[key]
-        item_code, material_request = key
+        item_code = item_info["item_code"]
+        material_request = item_info["material_request"]
 
         row = {
             "Item Code": item_code,
@@ -743,7 +751,7 @@ def get_comparison_report_data(docname):
     return {
         "columns": columns,
         "data": data,
-        "lowest_rate_suppliers": {f"{k[0]}|{k[1]}": v for k, v in lowest_rate_suppliers.items()},
+        "lowest_rate_suppliers": lowest_rate_suppliers,
         "supplier_id_to_name": supplier_names
     }
 
@@ -794,15 +802,13 @@ def get_last_purchase_details(item_code):
     return {"rate": "", "supplier": ""}
 
 
-def add_po_reference(comparison_doc, po, selected_item_keys):
+def add_po_reference(comparison_doc, po, selected_rfq_item_rows):
     """
     Update selection table rows with purchase_order field.
-    selected_item_keys is a set of (item_code, material_request) tuples.
+    selected_rfq_item_rows is a set of rfq_item_row values.
     """
     for row in comparison_doc.supplier_selection_table:
-        row_mr = row.get("material_request") or ""
-        key = (row.item_code, row_mr)
-        if key in selected_item_keys and row.supplier == po.supplier:
+        if row.get("rfq_item_row") in selected_rfq_item_rows and row.supplier == po.supplier:
             row.purchase_order = po.name
 
 
@@ -864,12 +870,18 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
                     if hasattr(po, 'custom_approver_designation'):
                         po.custom_approver_designation = approver_employee.get("designation")
 
-        # Build a map keyed by (item_code, material_request) for precise matching
+        # Build a map keyed by rfq_item_row for row-level precise matching
         selected_items_map = {
-            (item["item_code"], item.get("material_request") or ""): item
+            item["rfq_item_row"]: item
             for item in selected_items
+            if item.get("rfq_item_row")
         }
-        selected_item_keys = set(selected_items_map.keys())
+        # Also build sq_item → rfq_item_row lookup so PO items can be matched
+        sq_doc_for_map = frappe.get_doc("Supplier Quotation", sq_name)
+        sq_item_to_rfq_row = {
+            sq_item.name: (sq_item.get("request_for_quotation_item") or "")
+            for sq_item in sq_doc_for_map.items
+        }
 
         first_item = selected_items[0] if selected_items else {}
         payment_terms_template = first_item.get("payment_terms_template")
@@ -894,10 +906,11 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
 
         items_to_keep = []
         for po_item in po.items:
-            po_item_mr = po_item.get("material_request") or ""
-            key = (po_item.item_code, po_item_mr)
+            sq_item_name = po_item.get("supplier_quotation_item") or ""
+            rfq_row = sq_item_to_rfq_row.get(sq_item_name, "")
+            key = rfq_row
 
-            if key in selected_item_keys:
+            if key in selected_items_map:
                 selected_item = selected_items_map[key]
                 po_item.qty = selected_item["qty"]
                 po_item.rate = selected_item["rate"]
