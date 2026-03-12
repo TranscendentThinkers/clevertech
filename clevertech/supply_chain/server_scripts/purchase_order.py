@@ -15,10 +15,18 @@ def on_cancel(doc, method=None):
         WHERE purchase_order = %s
     """, doc.name, as_dict=True)
 
+    active_sqc_wf = frappe.db.get_value(
+        "Workflow", {"document_type": "Supplier Quotation Comparison", "is_active": 1}, "name"
+    )
     for row in sqc_names:
         sqc = frappe.get_doc("Supplier Quotation Comparison", row.parent)
         if sqc.docstatus == 1:
-            sqc.cancel()
+            if active_sqc_wf:
+                from frappe.model.workflow import apply_workflow
+                sqc.flags.ignore_permissions = True
+                apply_workflow(sqc, "Cancel")
+            else:
+                sqc.cancel()
             cancelled.append(f"Supplier Quotation Comparison: {sqc.name}")
 
     # Step 2: cancel Supplier Quotations linked to this PO via PO items
