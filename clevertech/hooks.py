@@ -126,6 +126,7 @@ doctype_js = {
         "Purchase Order":"public/js/purchase_order.js",
         "Purchase Receipt":"public/js/purchase_receipt.js",
         "Project":"public/js/project.js",
+        "Item":"public/js/item_update.js",
         
 }
 fixtures = [
