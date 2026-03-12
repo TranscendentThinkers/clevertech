@@ -13,6 +13,19 @@ def get_qc_print_html(doc_name):
 	# Render footer Jinja (inspected_by lookup, supplier name fallback, etc.)
 	footer_html = frappe.render_template(lh.footer or "", {"doc": doc})
 
+	# Sync footer "FOR [name]" row heights: Clevertech's long name wraps to 2 lines (3 total).
+	# When supplier name is short (won't wrap), inject <br> so both cells have equal height.
+	_sname = doc.supplier_name or ""
+	if len(_sname) < 45:
+		_marker = 'colspan="4"'
+		_idx1 = footer_html.find(_marker)
+		if _idx1 >= 0:
+			_idx2 = footer_html.find(_marker, _idx1 + len(_marker))
+			if _idx2 >= 0:
+				_close = footer_html.find("</td>", _idx2)
+				if _close >= 0:
+					footer_html = footer_html[:_close] + "<br><br>" + footer_html[_close:]
+
 	supplier_name = html.escape(
 		doc.supplier_name
 		or frappe.db.get_value("Purchase Receipt", doc.grn_name, "supplier_name")
@@ -41,6 +54,21 @@ def get_qc_print_html(doc_name):
 	notes_html = f'<div style="margin-top:6px;">{doc.notes}</div>' if doc.notes else ""
 
 	site_url = frappe.utils.get_url()
+	has_images_in_notes = "<img" in (doc.notes or "")
+
+	# Footer placement strategy:
+	# - Notes has images → <tfoot> (follows content, prevents image/footer overlap)
+	# - Notes is text-only → position:fixed pinned to page bottom
+	if has_images_in_notes:
+		footer_tfoot = f"<tfoot><tr><td class=\"footer-cell\">{footer_html}</td></tr></tfoot>"
+		footer_fixed = ""
+		content_padding_bottom = "5mm"
+		page_margin_bottom = "8mm"
+	else:
+		footer_tfoot = ""
+		footer_fixed = f"<div class=\"page-footer\">{footer_html}</div>"
+		content_padding_bottom = "70mm"
+		page_margin_bottom = "8mm"
 
 	return f"""<!DOCTYPE html>
 <html>
@@ -50,42 +78,46 @@ def get_qc_print_html(doc_name):
 <title>Quality Inspection Report - {html.escape(doc_name)}</title>
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{
-	font-family: Arial, sans-serif;
-	font-size: 11px;
-	padding: 42mm 15mm 70mm 15mm;
-}}
+body {{ font-family: Arial, sans-serif; font-size: 11px; }}
 @page {{
 	size: A4;
-	margin: 0 0 8mm 0;
+	margin: 0 15mm {page_margin_bottom} 15mm;
 	@bottom-center {{
 		content: "Page " counter(page) " of " counter(pages);
 		font-size: 9px;
 		color: #333;
 	}}
 }}
-.page-header {{
-	position: fixed;
-	top: 0; left: 0; right: 0;
-	height: 40mm;
-	padding: 5mm 15mm 0 15mm;
-	background: white;
-	border: none !important;
-}}
-.page-header * {{ border: none !important; }}
-.page-header hr {{ display: none !important; }}
+/* Outer layout table */
+.outer-table {{ width: 100%; border-collapse: collapse; border: none; }}
+.outer-table > thead > tr > td,
+.outer-table > tfoot > tr > td,
+.outer-table > tbody > tr > td {{ border: none; padding: 0; }}
+/* Header cell */
+.header-cell {{ padding: 5mm 0 0 0; }}
+/* Footer cell (tfoot mode) */
+.footer-cell {{ padding: 3mm 0; }}
+/* Fixed footer (text-only mode) */
 .page-footer {{
 	position: fixed;
 	bottom: 8mm; left: 0; right: 0;
-	padding: 3mm 15mm;
+	padding: 3mm 0;
 	background: white;
 }}
+/* Global table styles */
 table {{ width: 100%; border-collapse: collapse; font-size: 10px; }}
 table, th, td {{ border: 1px solid #aaa; }}
 th, td {{ padding: 6px; }}
-.no-border td, .no-border th {{ border: none !important; }}
+.no-border, .no-border td, .no-border th {{ border: none !important; }}
 tr {{ page-break-inside: avoid; }}
 table {{ page-break-inside: auto; }}
+/* Suppress borders inside header and footer cells */
+.header-cell table, .header-cell th, .header-cell td {{ border: none !important; }}
+/* Sync footer table header rows — ensures short supplier names match 2-line Clevertech name */
+.footer-cell td[colspan="4"], .page-footer td[colspan="4"] {{ height: 3.5em; vertical-align: bottom; }}
+/* Content cell */
+.content-cell {{ padding: 5mm 0 {content_padding_bottom} 0; }}
+.content-cell img {{ max-width: 100%; height: auto; margin-bottom: 14mm; }}
 .print-btn {{
 	position: fixed; top: 10px; right: 10px; z-index: 9999;
 	padding: 8px 18px; background: #5c7cfa; color: white;
@@ -99,16 +131,18 @@ table {{ page-break-inside: auto; }}
 
 <button class="print-btn" onclick="window.print()">Print / Save PDF</button>
 
-<div class="page-header">
-{lh.content or ""}
-</div>
+{footer_fixed}
 
-<div class="page-footer">
-{footer_html}
-</div>
+<table class="outer-table">
+<thead>
+<tr><td class="header-cell">{lh.content or ""}</td></tr>
+</thead>
+{footer_tfoot}
+<tbody>
+<tr><td class="content-cell">
 
 <div style="text-align:center; margin-bottom:6px;">
-	<h4 style="font-size:13px;"><strong>Quality Inspection Report</strong></h4>
+	<strong style="font-size:14px;">Quality Inspection Report</strong>
 </div>
 
 <table class="no-border" style="margin-bottom:5px; font-size:11px;">
@@ -156,6 +190,10 @@ table {{ page-break-inside: auto; }}
 	<strong>NOTES:</strong>
 	{notes_html}
 </div>
+
+</td></tr>
+</tbody>
+</table>
 
 </body>
 </html>"""

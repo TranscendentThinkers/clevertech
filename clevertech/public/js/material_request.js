@@ -73,15 +73,15 @@ frappe.ui.form.on('Material Request', {
                             __("Create")
                     );
                     frm.add_custom_button(
-                            __("Request for Quotation"),
-                            () => frm.events.make_request_for_quotation(frm),
-                            __("Create")
-                    );
-                    frm.add_custom_button(
                             __("Supplier Quotation"),
                             () => frm.events.make_supplier_quotation(frm),
                             __("Create")
                     );
+                    // Standalone button (not in dropdown) — our custom RFQ flow
+                    frm.add_custom_button(
+                        __("Create RFQ"),
+                        () => clevertech_mr.create_rfq(frm)
+                    ).addClass("btn-primary");
                 }
 
                 if (frm.doc.material_request_type === "Manufacture") {
@@ -354,3 +354,87 @@ function show_extra_items_dialog(frm, items) {
 
     dialog.show();
 }
+
+
+// ── Create RFQ from MR — custom flow ─────────────────────────────────────────
+const clevertech_mr = {
+    create_rfq(frm) {
+        frappe.call({
+            method: "clevertech.supply_chain.server_scripts.rfq_get_items.check_mr_rfq_status",
+            args: { mr_name: frm.doc.name },
+            callback(r) {
+                if (!r.message) return;
+                const { total, has_rfq_no_po, no_rfq, rfq_nos } = r.message;
+
+                if (no_rfq === 0 && has_rfq_no_po === 0) {
+                    frappe.msgprint({
+                        title: __("No Items to Fetch"),
+                        message: __("All {0} items already have Purchase Orders.", [total]),
+                        indicator: "orange"
+                    });
+                    return;
+                }
+
+                if (has_rfq_no_po === 0) {
+                    // No pending RFQs — fetch remaining directly, no dialog needed
+                    clevertech_mr._do_create_rfq(frm, "remaining");
+                    return;
+                }
+
+                if (no_rfq === 0) {
+                    // All fetchable items already have pending RFQs — confirm before creating
+                    const rfq_list = rfq_nos.slice(0, 5).join(", ")
+                        + (rfq_nos.length > 5 ? ` and ${rfq_nos.length - 5} more` : "");
+                    frappe.confirm(
+                        __("All {0} items already have pending RFQ(s) ({1}) but no Purchase Order yet.<br><br>Create a new RFQ anyway?",
+                            [has_rfq_no_po, rfq_list]),
+                        () => clevertech_mr._do_create_rfq(frm, "all")
+                    );
+                    return;
+                }
+
+                // Mix of pending RFQ and no-RFQ items — ask user
+                const rfq_list = rfq_nos.slice(0, 5).join(", ")
+                    + (rfq_nos.length > 5 ? ` and ${rfq_nos.length - 5} more` : "");
+
+                const d = new frappe.ui.Dialog({
+                    title: __("Items with Pending RFQs"),
+                    fields: [{
+                        fieldtype: "HTML",
+                        options: `<p>
+                            <b>${has_rfq_no_po}</b> item(s) already have RFQ(s) pending
+                            (<i>${rfq_list}</i>) but no Purchase Order yet.
+                            <br><br>What would you like to fetch?
+                        </p>`
+                    }],
+                    primary_action_label: __("Only {0} Remaining Items (no RFQ yet)", [no_rfq]),
+                    primary_action() {
+                        d.hide();
+                        clevertech_mr._do_create_rfq(frm, "remaining");
+                    },
+                    secondary_action_label: __("All {0} Items (excluding those with PO)", [no_rfq + has_rfq_no_po]),
+                    secondary_action() {
+                        d.hide();
+                        clevertech_mr._do_create_rfq(frm, "all");
+                    }
+                });
+                d.show();
+            }
+        });
+    },
+
+    _do_create_rfq(frm, fetch_mode) {
+        frappe.call({
+            method: "clevertech.supply_chain.server_scripts.rfq_get_items.make_request_for_quotation",
+            args: { source_name: frm.doc.name, fetch_mode },
+            freeze: true,
+            freeze_message: __("Creating RFQ..."),
+            callback(r) {
+                if (r.message) {
+                    frappe.model.sync(r.message);
+                    frappe.set_route("Form", "Request for Quotation", r.message.name);
+                }
+            }
+        });
+    }
+};

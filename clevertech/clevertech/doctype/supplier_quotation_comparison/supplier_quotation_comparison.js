@@ -327,7 +327,20 @@ function render_comparison_from_table(frm) {
             try {
                 let grandTotals = JSON.parse(row.supplier_grand_totals);
                 Object.keys(grandTotals).forEach(supplierName => {
-                    dataRow[`${supplierName.trim()} - Rate`] = grandTotals[supplierName];
+                    // grandTotals entries are now {value, currency_symbol} objects
+                    const entry = grandTotals[supplierName];
+                    if (entry && typeof entry === "object") {
+                        const sym = entry.currency_symbol || "";
+                        const val = entry.value;
+                        if (val === "No Quotation") {
+                            dataRow[`${supplierName.trim()} - Rate`] = "No Quotation";
+                        } else {
+                            dataRow[`${supplierName.trim()} - Rate`] = sym ? `${sym}${Number(val).toFixed(2)}` : Number(val).toFixed(2);
+                        }
+                    } else {
+                        // Fallback for old data without currency_symbol
+                        dataRow[`${supplierName.trim()} - Rate`] = entry;
+                    }
                 });
             } catch (e) {
                 console.error("Error parsing supplier grand totals for TOTAL row:", e);
@@ -339,25 +352,48 @@ function render_comparison_from_table(frm) {
 
                 Object.keys(supplierRates).forEach(supplierName => {
                     if (supplierName.startsWith("__")) return;
-                    dataRow[`${supplierName.trim()} - Rate`] = supplierRates[supplierName];
-                    let rate = supplierRates[supplierName];
-                    if (rate === "N/A" || rate === null || rate === undefined || rate === 0 || rate === "0") {
+
+                    const entry = supplierRates[supplierName];
+                    let rateVal, displayVal;
+
+                    if (entry && typeof entry === "object") {
+                        // New format: {rate, currency_symbol}
+                        rateVal = entry.rate;
+                        const sym = entry.currency_symbol || "";
+                        if (rateVal === "N/A" || rateVal === null || rateVal === undefined || rateVal === 0 || rateVal === "0") {
+                            displayVal = "N/A";
+                        } else {
+                            displayVal = sym ? `${sym}${Number(rateVal).toFixed(2)}` : Number(rateVal).toFixed(2);
+                        }
+                    } else {
+                        // Fallback for old data stored as plain value
+                        rateVal = entry;
+                        displayVal = (rateVal === "N/A" || rateVal === null || rateVal === undefined || rateVal === 0 || rateVal === "0")
+                            ? "N/A"
+                            : rateVal;
+                    }
+
+                    dataRow[`${supplierName.trim()} - Rate`] = displayVal;
+
+                    if (displayVal === "N/A") {
                         itemNaSuppliers.push(supplierName.trim());
                     }
                 });
 
-                // Embed lowest supplier directly in the dataRow — avoids rowKey collision
-                // when same item_code appears multiple times (different rfq_item_row)
+                // Determine lowest supplier for green highlight
+                // Read from Python-embedded __lowest__ key (display name already resolved)
                 const lowestFromPython = supplierRates["__lowest__"];
                 if (lowestFromPython) {
                     dataRow["__lowest_supplier__"] = lowestFromPython.trim();
                 } else {
+                    // Fallback: find lowest by numeric rate value
                     let lowestName = null, lowestRate = Infinity;
                     Object.keys(supplierRates).forEach(supplierName => {
                         if (supplierName.startsWith("__")) return;
-                        let rate = supplierRates[supplierName];
-                        if (!isNaN(Number(rate)) && Number(rate) > 0 && Number(rate) < lowestRate) {
-                            lowestRate = Number(rate);
+                        const entry = supplierRates[supplierName];
+                        const rateVal = (entry && typeof entry === "object") ? entry.rate : entry;
+                        if (!isNaN(Number(rateVal)) && Number(rateVal) > 0 && Number(rateVal) < lowestRate) {
+                            lowestRate = Number(rateVal);
                             lowestName = supplierName.trim();
                         }
                     });
@@ -547,6 +583,9 @@ function build_html_table(columns, data) {
         html += `<tr${rowClass}>`;
         columns.forEach((col, idx) => {
             let val = row[col] ?? "";
+
+            // Only auto-format numbers for non-rate columns (rate cells are already
+            // formatted as "₹1500.00" strings by render_comparison_from_table)
             if (typeof val === 'number') {
                 val = val.toFixed(2);
             }
@@ -570,6 +609,7 @@ function build_html_table(columns, data) {
                 const supplierName = col.replace(' - Rate', '').trim();
                 const strVal = String(val).trim();
 
+                // N/A detection: pure "N/A", empty, or a bare zero (not a formatted symbol+number)
                 const isNA = strVal === "N/A" || strVal === "" || strVal === "0" || strVal === "0.00";
                 const isLowest = !isNA &&
                     row["__lowest_supplier__"] &&
