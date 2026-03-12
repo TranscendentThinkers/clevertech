@@ -92,6 +92,12 @@
    "fieldtype": "Link",
    "label": "Material Request",
    "options": "Material Request"
+  },
+  {
+   "fieldname": "rfq_item_row",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "RFQ Item Row"
   }
  ],
  "grid_page_length": 50,

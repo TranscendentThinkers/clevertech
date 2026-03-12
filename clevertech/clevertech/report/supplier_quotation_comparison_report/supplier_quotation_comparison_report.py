@@ -69,12 +69,13 @@ def execute(filters=None):
         })
 
     # ── 4. Process RFQ Items ─────────────────────────────────────────────────
+    # Key by rfq_item.name (row ID) — handles duplicate item codes from same MR
     items_data = {}
     item_order = []
 
     for rfq_item in rfq_doc.items:
         mr = rfq_item.get("material_request") or ""
-        key = (rfq_item.item_code, mr)
+        key = rfq_item.name  # unique row ID
         last = get_last_purchase_details(rfq_item.item_code)
         description = strip_html_tags(rfq_item.description or rfq_item.item_name or rfq_item.item_code)
 
@@ -95,11 +96,10 @@ def execute(filters=None):
         sq_items = frappe.get_all(
             "Supplier Quotation Item",
             filters={"parent": sq_name},
-            fields=["item_code", "material_request", "rate"]
+            fields=["item_code", "request_for_quotation_item", "rate"]
         )
         for item in sq_items:
-            item_mr = item.get("material_request") or ""
-            key = (item.item_code, item_mr)
+            key = item.get("request_for_quotation_item") or ""
             if key in items_data and item.rate > 0:
                 items_data[key]["rates"][sid] = item.rate
 

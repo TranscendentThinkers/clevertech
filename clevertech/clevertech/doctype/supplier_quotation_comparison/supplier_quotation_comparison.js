@@ -221,7 +221,8 @@ function fetch_supplier_data(frm, cdt, cdn) {
                 rfq: rfq,
                 supplier: row.supplier,
                 item_code: row.item_code,
-                material_request: row.material_request || ""
+                material_request: row.material_request || "",
+                rfq_item_row: row.rfq_item_row || ""
             },
             callback: function(r) {
                 if (r.message) {
@@ -308,10 +309,6 @@ function render_comparison_from_table(frm) {
     }
 
     let data = [];
-    let lowestRateSuppliers = {};
-    let naSuppliers = {};
-
-    const specialRows = ["TOTAL", "PAYMENT_TERMS", "DELIVERY_TERMS", "NOTES", "ADDITIONAL_NOTES"];
 
     frm.doc.comparison_table.forEach(row => {
         let dataRow = {
@@ -321,7 +318,9 @@ function render_comparison_from_table(frm) {
             "Qty": row.qty || "",
             "UOM": row.uom || "",
             "Last Purchase Rate": row.last_purchase_rate || "",
-            "Last Purchase Supplier": row.last_purchase_supplier || ""
+            "Last Purchase Supplier": row.last_purchase_supplier || "",
+            "__lowest_supplier__": null,
+            "__na_suppliers__": []
         };
 
         if (row.item_code === "TOTAL" && row.supplier_grand_totals) {
@@ -336,41 +335,24 @@ function render_comparison_from_table(frm) {
         } else if (row.supplier_rates) {
             try {
                 let supplierRates = JSON.parse(row.supplier_rates);
-                Object.keys(supplierRates).forEach(supplierName => {
-                    if (supplierName.startsWith("__")) return;
-                    dataRow[`${supplierName.trim()} - Rate`] = supplierRates[supplierName];
-                });
-            } catch (e) {
-                console.error("Error parsing supplier rates for row:", e);
-            }
-        }
-
-        data.push(dataRow);
-
-        // Use composite key item_code|material_request for lowest rate tracking
-        const rowKey = `${row.item_code}|${row.material_request || ""}`;
-        if (row.item_code && !specialRows.includes(row.item_code) && row.supplier_rates) {
-            try {
-                let supplierRates = JSON.parse(row.supplier_rates);
                 let itemNaSuppliers = [];
 
                 Object.keys(supplierRates).forEach(supplierName => {
                     if (supplierName.startsWith("__")) return;
+                    dataRow[`${supplierName.trim()} - Rate`] = supplierRates[supplierName];
                     let rate = supplierRates[supplierName];
                     if (rate === "N/A" || rate === null || rate === undefined || rate === 0 || rate === "0") {
                         itemNaSuppliers.push(supplierName.trim());
                     }
                 });
 
-                // Use Python-determined lowest supplier via __lowest__ marker in supplier_rates
-                // This is set by Python and handles the grand total tiebreak correctly
+                // Embed lowest supplier directly in the dataRow — avoids rowKey collision
+                // when same item_code appears multiple times (different rfq_item_row)
                 const lowestFromPython = supplierRates["__lowest__"];
                 if (lowestFromPython) {
-                    lowestRateSuppliers[rowKey] = { supplier: lowestFromPython.trim() };
+                    dataRow["__lowest_supplier__"] = lowestFromPython.trim();
                 } else {
-                    // Fallback: scan rates numerically (no tiebreak)
-                    let lowestName = null;
-                    let lowestRate = Infinity;
+                    let lowestName = null, lowestRate = Infinity;
                     Object.keys(supplierRates).forEach(supplierName => {
                         if (supplierName.startsWith("__")) return;
                         let rate = supplierRates[supplierName];
@@ -379,21 +361,19 @@ function render_comparison_from_table(frm) {
                             lowestName = supplierName.trim();
                         }
                     });
-                    if (lowestName !== null) {
-                        lowestRateSuppliers[rowKey] = { supplier: lowestName };
-                    }
+                    if (lowestName !== null) dataRow["__lowest_supplier__"] = lowestName;
                 }
 
-                if (itemNaSuppliers.length > 0) {
-                    naSuppliers[rowKey] = itemNaSuppliers;
-                }
+                dataRow["__na_suppliers__"] = itemNaSuppliers;
             } catch (e) {
                 console.error("Error determining lowest/NA rates for item:", row.item_code, e);
             }
         }
+
+        data.push(dataRow);
     });
 
-    const html = build_html_table(columns, data, lowestRateSuppliers, naSuppliers, {});
+    const html = build_html_table(columns, data);
     $wrapper.html(html);
 }
 
@@ -443,7 +423,7 @@ const SPECIAL_ROW_LABELS = {
     "NOTES": "Notes"
 };
 
-function build_html_table(columns, data, lowest_rate_suppliers, na_suppliers, supplier_name_to_id) {
+function build_html_table(columns, data) {
     const tableId = `comparison-table-${Math.random().toString(36).substr(2, 9)}`;
 
     let html = `
@@ -554,10 +534,8 @@ function build_html_table(columns, data, lowest_rate_suppliers, na_suppliers, su
     });
     html += `</tr></thead><tbody>`;
 
-    data.forEach((row, rowIndex) => {
+    data.forEach((row) => {
         const itemCode = (row["Item Code"] || "").trim();
-        const materialRequest = (row["Material Request"] || "").trim();
-        const rowKey = `${itemCode}|${materialRequest}`;
         const isSpecialRow = SPECIAL_ROW_LABELS.hasOwnProperty(itemCode);
         const isTotalRow = itemCode === "TOTAL";
         const isExtraRow = ["PAYMENT_TERMS", "DELIVERY_TERMS", "NOTES"].includes(itemCode);
@@ -593,9 +571,9 @@ function build_html_table(columns, data, lowest_rate_suppliers, na_suppliers, su
                 const strVal = String(val).trim();
 
                 const isNA = strVal === "N/A" || strVal === "" || strVal === "0" || strVal === "0.00";
-                const isLowest = lowest_rate_suppliers[rowKey] &&
-                    (lowest_rate_suppliers[rowKey].supplier || '').trim() === supplierName &&
-                    !isNA;
+                const isLowest = !isNA &&
+                    row["__lowest_supplier__"] &&
+                    row["__lowest_supplier__"].trim() === supplierName;
 
                 if (isNA) {
                     tdClass = 'na-rate';

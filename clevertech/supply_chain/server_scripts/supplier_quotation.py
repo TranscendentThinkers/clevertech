@@ -53,44 +53,36 @@ def validate(doc, method):
     # Populate custom payment schedule based on the fetched template
     set_payment_schedule(doc)
 
-    # Collect all Material Requests linked in RFQ Items
-    mr_list = list({d.request_for_quotation for d in doc.items if d.request_for_quotation})
-    if not mr_list:
+    # Collect all RFQs linked in SQ Items
+    rfq_list = list({d.request_for_quotation for d in doc.items if d.request_for_quotation})
+    if not rfq_list:
         return
-    # Get all MR items
-    mr_items = frappe.get_all(
+    # Build map keyed by RFQ item row ID
+    rfq_items = frappe.get_all(
         "Request for Quotation Item",
-        filters={"parent": ("in", mr_list)},
-        fields=["item_code", "qty", "parent"]
+        filters={"parent": ("in", rfq_list)},
+        fields=["name", "item_code", "qty", "parent"]
     )
-    # Convert items to map for comparison
-    mr_map = {}
-    for i in mr_items:
-        key = f"{i.parent}_{i.item_code}"
-        mr_map[key] = i.qty
-    frappe.log_error("Data",{"MR List":mr_list,"MR Items":mr_items,"MR Map":mr_map})
-    # Validate RFQ items
+    rfq_item_map = {i.name: i for i in rfq_items}
+
+    # Validate each SQ row against its linked RFQ row
     for row in doc.items:
-        # Check for extra items
         if not row.request_for_quotation:
             frappe.throw(
-                f"Extra item found in Suppier  Quotation. "
+                f"Extra item found in Supplier Quotation. "
                 f"Item {row.item_code} does not belong to any selected Request For Quotation."
             )
-        key = f"{row.request_for_quotation}_{row.item_code}"
-        frappe.log_error("Key",key)
-        # Check if item exists in MR
-        if key not in mr_map:
+        if not row.request_for_quotation_item or row.request_for_quotation_item not in rfq_item_map:
             frappe.throw(
-                f"Item {row.item_code} is not part of Request For Quotation {row.request_for_quotation}."
+                f"Item {row.item_code} (row {row.idx}) is not linked to a valid "
+                f"Request For Quotation {row.request_for_quotation} row."
             )
-        # Check quantity match
-        mr_qty = float(mr_map[key] or 0)
-        rfq_qty = float(row.qty or 0)
-        if rfq_qty > mr_qty:
+        rfq_row = rfq_item_map[row.request_for_quotation_item]
+        if flt(row.qty) > flt(rfq_row.qty):
             frappe.throw(
-                f"Quantity mismatch for item {row.item_code}. "
-                f"Request For Quotation quantity is {mr_qty} but Supplier Quotation quantity is {rfq_qty}."
+                f"Quantity mismatch for item {row.item_code} (row {row.idx}). "
+                f"RFQ {row.request_for_quotation} allows {rfq_row.qty} "
+                f"but Supplier Quotation has {row.qty}."
             )
     # Budget validation commented out
     # if not doc.project:
