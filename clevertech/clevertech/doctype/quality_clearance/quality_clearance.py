@@ -40,10 +40,13 @@ def get_qc_print_html(doc_name):
 
 	notes_html = f'<div style="margin-top:6px;">{doc.notes}</div>' if doc.notes else ""
 
+	site_url = frappe.utils.get_url()
+
 	return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<base href="{site_url}">
 <title>Quality Inspection Report - {html.escape(doc_name)}</title>
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -67,13 +70,15 @@ body {{
 	height: 40mm;
 	padding: 5mm 15mm 0 15mm;
 	background: white;
+	border: none !important;
 }}
+.page-header * {{ border: none !important; }}
+.page-header hr {{ display: none !important; }}
 .page-footer {{
 	position: fixed;
 	bottom: 8mm; left: 0; right: 0;
 	padding: 3mm 15mm;
 	background: white;
-	border-top: 1px solid #cfcfcf;
 }}
 table {{ width: 100%; border-collapse: collapse; font-size: 10px; }}
 table, th, td {{ border: 1px solid #aaa; }}
@@ -88,6 +93,7 @@ table {{ page-break-inside: auto; }}
 }}
 @media print {{ .print-btn {{ display: none; }} }}
 </style>
+<script>window.addEventListener('load', function() {{ window.print(); }});</script>
 </head>
 <body>
 
