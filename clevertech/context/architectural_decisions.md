@@ -1541,3 +1541,74 @@ Summing would fix the reported validation failure but has an edge case: two rows
 - **Always** key by the child row `name` field (unique Frappe row ID)
 - Use the cross-doctype reference field (e.g. `request_for_quotation_item`) to match rows across doctypes
 
+
+---
+
+### Decision N: PO Cancel — SQC Workflow-Aware Cancellation
+
+**Problem:** When a PO is cancelled, our `on_cancel` hook cancels the linked SQC and SQ. This worked when SQC had no workflow (direct `sqc.cancel()`). After a workflow ("SQC Approval Workflow Without Conditions") was added to SQC, `sqc.cancel()` left the document in an inconsistent state (docstatus=2 but `workflow_state` still "Approved").
+
+**Solution:** Detect if an active workflow exists on SQC at runtime. If yes, use `frappe.model.workflow.apply_workflow(sqc, "Cancel")` which goes through the proper `Approved → Cancelled` workflow transition (and sets both `workflow_state` and `docstatus=2`). If no workflow, fall back to direct `sqc.cancel()`.
+
+**File:** `supply_chain/server_scripts/purchase_order.py` — `on_cancel()`
+
+**Key note:** SQ has no workflow, so `sq.cancel()` is unchanged.
+
+---
+
+### Decision N: RFQ Re-Creation Allowed When No PO Exists
+
+**Problem:** `rfq_get_items.py` blocked RFQ creation for any MR item that already had a non-cancelled RFQ — regardless of whether a PO was created. This prevented re-quoting items where the supplier returned N/A or didn't respond.
+
+**Solution:** Changed the exclusion condition to only block RFQ creation when the MR item has **both** a non-cancelled RFQ **and** a submitted PO. Items with RFQ but no PO are now allowed through for re-quoting.
+
+**File:** `supply_chain/server_scripts/rfq_get_items.py` — `_get_mr_items_with_rfq()`
+
+**Trade-off Accepted:** A second RFQ can now be created for items already in a submitted RFQ (if no PO exists). The `supplier_quotation.py` validation still enforces qty limits via row-ID matching against the specific RFQ item row.
+
+---
+
+### Decision N: Create RFQ Button — Standalone with Smart Item Filtering
+
+**Problem:** The standard ERPNext "Request for Quotation" button in the MR Create dropdown fetches all items without any awareness of existing RFQs. For MRs with 100s of items, the user has no visibility into which items already have pending RFQs vs. which need a new RFQ.
+
+**Solution:** Added a standalone "Create RFQ" button (not in the dropdown) that:
+1. Calls `check_mr_rfq_status(mr_name)` to bucket items into: `has_po` (excluded), `has_rfq_no_po` (pending), `no_rfq` (fresh).
+2. If `no_rfq > 0` and `has_rfq_no_po > 0` — shows a dialog asking the user to choose:
+   - "Only N Remaining Items (no RFQ yet)" → `fetch_mode="remaining"`
+   - "All N Items (excluding those with PO)" → `fetch_mode="all"`
+3. If `has_rfq_no_po = 0` — fetches directly, no dialog.
+4. If `no_rfq = 0` and `has_rfq_no_po > 0` — shows confirmation: "All N items already have pending RFQs. Create anyway?" → on confirm, `fetch_mode="all"`.
+5. If both = 0 — shows "All items have POs" message and stops.
+
+**Why not override the standard button?**
+Frappe's `add_inner_button` skips adding if a button with the same label already exists in the group — the first registration wins. ERPNext registers the standard "Request for Quotation" button first (loaded before custom app). Removing then re-adding is fragile due to uncertain refresh handler execution order. A standalone button is simpler and avoids all timing issues.
+
+**Why not just exclude pending RFQ items silently?**
+Items where the supplier didn't quote or the rate was unacceptable need to be re-quoted. Silent exclusion was confusing for users managing large MRs. The dialog gives informed control.
+
+**Exclusion rules:**
+- `has_po` (RFQ + submitted PO) → always excluded (fully processed)
+- `has_rfq_no_po` (RFQ but no PO) → user choice
+- `no_rfq` (no RFQ) → always included
+
+**Standard dropdown button behavior:** Still works via hooks override (`make_request_for_quotation` default `fetch_mode="remaining"`). Will be hidden from dropdown after signoff on the new button.
+
+**Files:**
+- `supply_chain/server_scripts/rfq_get_items.py` — `check_mr_rfq_status()`, `make_request_for_quotation(fetch_mode)`
+- `public/js/material_request.js` — `clevertech_mr.create_rfq()`, `clevertech_mr._do_create_rfq()`
+
+---
+
+### Decision N: MR Item Project Field — Fix via JS, Not Report Query
+
+**Problem:** Project tracking report used `mri.project` on MR items to filter by project. When `project` was removed from the BOM doctype, new MR items were created with `project = NULL`, causing those MRs to disappear from the report. The chain broke: no BOM project → no MR item project → no downstream SQ/PO item project.
+
+**Solution:** Fixed at the source — `material_request.js` now sets `d.project = frm.doc.custom_project_` on each item row when exploding BOM items. Standard ERPNext then propagates `project` down the chain (MR item → RFQ item `project_name` → SQ item → PO item → PR item). The report query is unchanged.
+
+**Why not fix the report query instead?**
+Fixing the report to join through `mr.custom_project_` would work for MR but require tracing the full chain for PO/PR/SQ queries. The JS fix is simpler, correct at source, and keeps the existing client scripts (which set header-level `project`/`cost_center` on RFQ, SQ, PO) still valid.
+
+**File:** `public/js/material_request.js`
+
+**Note:** Existing MRs created after BOM project removal must be cancelled and re-amended to get `project` populated on items.

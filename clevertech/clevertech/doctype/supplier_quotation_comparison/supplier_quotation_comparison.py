@@ -442,22 +442,42 @@ def get_comparison_report_data(docname):
         supplier_grand_totals[supplier_id] = 0  # Initialize to 0
 
     # Get all supplier quotations for this RFQ (latest first)
+    # Fetch currency alongside other fields
     supplier_quotations = frappe.get_all(
         "Supplier Quotation",
         filters={
             "request_for_quotation": rfq,
         },
-        fields=["name", "supplier", "modified", "grand_total"],
+        fields=["name", "supplier", "modified", "grand_total", "currency"],
         order_by="modified desc"
     )
 
     processed_suppliers = {}
+    supplier_currencies = {}  # supplier_id -> currency code
 
     # Keep latest quotation per supplier
     for sq in supplier_quotations:
         if sq.supplier not in processed_suppliers:
             processed_suppliers[sq.supplier] = sq.name
             supplier_grand_totals[sq.supplier] = sq.grand_total or 0
+            supplier_currencies[sq.supplier] = sq.currency or ""
+
+    # Resolve currency symbol for each supplier (cached to avoid redundant DB hits)
+    currency_symbol_cache = {}
+
+    def get_currency_symbol(currency_code):
+        if not currency_code:
+            return ""
+        if currency_code in currency_symbol_cache:
+            return currency_symbol_cache[currency_code]
+        symbol = frappe.db.get_value("Currency", currency_code, "symbol") or currency_code
+        currency_symbol_cache[currency_code] = symbol
+        return symbol
+
+    supplier_currency_symbols = {
+        supplier: get_currency_symbol(currency_code)
+        for supplier, currency_code in supplier_currencies.items()
+    }
 
     # Fetch payment terms, delivery terms per supplier from their quotations
     supplier_payment_terms = {}
@@ -521,6 +541,8 @@ def get_comparison_report_data(docname):
                     "rate": item.rate,
                     "qty": item.qty,
                     "amount": item.amount,
+                    # Store the currency symbol alongside so the JS can render it per cell
+                    "currency_symbol": supplier_currency_symbols.get(supplier, "")
                 }
 
                 # Compare by rate; on tie use supplier grand total as tiebreaker
@@ -612,15 +634,21 @@ def get_comparison_report_data(docname):
             "last_purchase_supplier": item_info.get("last_purchase_supplier", "")
         }
 
-        # Store supplier rates as JSON (treat 0 rate as N/A)
+        # Each supplier entry is now {"rate": value, "currency_symbol": "₹"}
+        # so the JS can render symbol + rate together in each cell
         supplier_rates = {}
         for supplier in suppliers:
             supplier_data = item_info.get(supplier, {})
+            display_name = supplier_names[supplier]
             if supplier_data:
                 rate_val = supplier_data.get("rate", None)
-                supplier_rates[supplier_names[supplier]] = "N/A" if (rate_val is None or rate_val == 0) else rate_val
+                sym = supplier_data.get("currency_symbol", "")
+                if rate_val is None or rate_val == 0:
+                    supplier_rates[display_name] = {"rate": "N/A", "currency_symbol": sym}
+                else:
+                    supplier_rates[display_name] = {"rate": rate_val, "currency_symbol": sym}
             else:
-                supplier_rates[supplier_names[supplier]] = "N/A"
+                supplier_rates[display_name] = {"rate": "N/A", "currency_symbol": ""}
 
         # Embed the lowest supplier name directly in supplier_rates JSON
         if key in lowest_rate_suppliers:
@@ -633,14 +661,16 @@ def get_comparison_report_data(docname):
 
         sqc.append("comparison_table", row_data)
 
-    # Add total row
+    # Add total row — grand totals also carry the currency symbol
     total_supplier_grand_totals = {}
     for supplier in suppliers:
         total_value = supplier_grand_totals.get(supplier, 0)
+        display_name = supplier_names[supplier]
+        sym = supplier_currency_symbols.get(supplier, "")
         if supplier not in processed_suppliers:
-            total_supplier_grand_totals[supplier_names[supplier]] = "No Quotation"
+            total_supplier_grand_totals[display_name] = {"value": "No Quotation", "currency_symbol": ""}
         else:
-            total_supplier_grand_totals[supplier_names[supplier]] = total_value
+            total_supplier_grand_totals[display_name] = {"value": total_value, "currency_symbol": sym}
 
     total_row = {
         "item_code": "TOTAL",
@@ -779,7 +809,8 @@ def get_last_purchase_details(item_code):
         SELECT
             pii.rate,
             pi.supplier,
-            pi.posting_date
+            pi.posting_date,
+            pi.currency
         FROM
             `tabPurchase Invoice Item` pii
         INNER JOIN
@@ -794,8 +825,11 @@ def get_last_purchase_details(item_code):
 
     if last_purchase:
         supplier_name = frappe.db.get_value("Supplier", last_purchase[0].supplier, "supplier_name")
+        currency_symbol = frappe.db.get_value("Currency", last_purchase[0].currency, "symbol") or ""
+        rate = last_purchase[0].rate
+        formatted_rate = f"{currency_symbol}{rate}" if currency_symbol else str(rate)
         return {
-            "rate": last_purchase[0].rate,
+            "rate": formatted_rate,
             "supplier": supplier_name or last_purchase[0].supplier
         }
 

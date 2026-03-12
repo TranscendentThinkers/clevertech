@@ -19,7 +19,8 @@
   "column_break_nslt",
   "last_purchase_rate",
   "supplier_rates",
-  "material_request"
+  "material_request",
+  "rfq_item_row"
  ],
  "fields": [
   {
@@ -52,7 +53,7 @@
   },
   {
    "fieldname": "last_purchase_rate",
-   "fieldtype": "Currency",
+   "fieldtype": "Data",
    "label": "Last Purchase Rate"
   },
   {
@@ -104,7 +105,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-03-05 14:48:10.566901",
+ "modified": "2026-03-12 18:09:17.740264",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Comparison Table Item",
