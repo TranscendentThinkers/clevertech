@@ -1,5 +1,158 @@
+import html
 import frappe
 from frappe.model.document import Document
+
+
+@frappe.whitelist()
+def get_qc_print_html(doc_name):
+	doc = frappe.get_doc("Quality Clearance", doc_name)
+	frappe.has_permission("Quality Clearance", "print", doc=doc_name, throw=True)
+
+	lh = frappe.db.get_value("Letter Head", "QC Letter Head", ["content", "footer"], as_dict=True)
+
+	# Render footer Jinja (inspected_by lookup, supplier name fallback, etc.)
+	footer_html = frappe.render_template(lh.footer or "", {"doc": doc})
+
+	supplier_name = html.escape(
+		doc.supplier_name
+		or frappe.db.get_value("Purchase Receipt", doc.grn_name, "supplier_name")
+		or frappe.db.get_value("Supplier", doc.supplier, "supplier_name")
+		or ""
+	)
+
+	if doc.type == "Purchase Order Based":
+		po_grn_label, po_grn_value = "PO NO.", html.escape(doc.po_no or "")
+	else:
+		po_grn_label, po_grn_value = "GRN NO.", html.escape(doc.grn_name or "")
+
+	items_rows = ""
+	for i, row in enumerate(doc.grn_items_quality_reqd, 1):
+		items_rows += f"""<tr>
+			<td style="text-align:center;">{i}</td>
+			<td style="text-align:center;">{html.escape(row.item_code or "")}</td>
+			<td style="text-align:center;">{html.escape(row.item_name or "")}</td>
+			<td style="text-align:center;">{row.po_qty or 0}</td>
+			<td style="text-align:center;">{row.accepted_qty or 0}</td>
+			<td style="text-align:center;">{row.rejected_qty or 0}</td>
+			<td style="text-align:center;">{html.escape(row.type_of_issue or "")}</td>
+			<td style="text-align:center;">{html.escape(row.reason or "")}</td>
+		</tr>"""
+
+	notes_html = f'<div style="margin-top:6px;">{doc.notes}</div>' if doc.notes else ""
+
+	return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Quality Inspection Report - {html.escape(doc_name)}</title>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{
+	font-family: Arial, sans-serif;
+	font-size: 11px;
+	padding: 42mm 15mm 70mm 15mm;
+}}
+@page {{
+	size: A4;
+	margin: 0 0 8mm 0;
+	@bottom-center {{
+		content: "Page " counter(page) " of " counter(pages);
+		font-size: 9px;
+		color: #333;
+	}}
+}}
+.page-header {{
+	position: fixed;
+	top: 0; left: 0; right: 0;
+	height: 40mm;
+	padding: 5mm 15mm 0 15mm;
+	background: white;
+}}
+.page-footer {{
+	position: fixed;
+	bottom: 8mm; left: 0; right: 0;
+	padding: 3mm 15mm;
+	background: white;
+	border-top: 1px solid #cfcfcf;
+}}
+table {{ width: 100%; border-collapse: collapse; font-size: 10px; }}
+table, th, td {{ border: 1px solid #aaa; }}
+th, td {{ padding: 6px; }}
+.no-border td, .no-border th {{ border: none !important; }}
+tr {{ page-break-inside: avoid; }}
+table {{ page-break-inside: auto; }}
+.print-btn {{
+	position: fixed; top: 10px; right: 10px; z-index: 9999;
+	padding: 8px 18px; background: #5c7cfa; color: white;
+	border: none; border-radius: 4px; cursor: pointer; font-size: 13px;
+}}
+@media print {{ .print-btn {{ display: none; }} }}
+</style>
+</head>
+<body>
+
+<button class="print-btn" onclick="window.print()">Print / Save PDF</button>
+
+<div class="page-header">
+{lh.content or ""}
+</div>
+
+<div class="page-footer">
+{footer_html}
+</div>
+
+<div style="text-align:center; margin-bottom:6px;">
+	<h4 style="font-size:13px;"><strong>Quality Inspection Report</strong></h4>
+</div>
+
+<table class="no-border" style="margin-bottom:5px; font-size:11px;">
+<tr>
+	<td style="width:20%; padding:3px 2px;">VENDOR NAME</td>
+	<td style="width:2%; text-align:center;">:</td>
+	<td style="width:33%; padding-left:3px;">{supplier_name}</td>
+	<td style="width:13%; padding:3px 2px; text-align:right;">DATE</td>
+	<td style="width:2%; text-align:center;">:</td>
+	<td style="width:30%; padding-left:3px;">{doc.posting_date}</td>
+</tr>
+<tr>
+	<td style="padding:3px 2px;">{po_grn_label}</td>
+	<td style="text-align:center;">:</td>
+	<td style="padding-left:3px;">{po_grn_value}</td>
+	<td style="text-align:right; padding:3px 2px;">PRJ NO.</td>
+	<td style="text-align:center;">:</td>
+	<td style="padding-left:3px;">{html.escape(doc.project or "")}</td>
+</tr>
+<tr>
+	<td style="padding:3px 2px;">SUB</td>
+	<td style="text-align:center;">:</td>
+	<td style="padding-left:3px;">MOM between Clevertech and {supplier_name}</td>
+	<td></td><td></td><td></td>
+</tr>
+</table>
+
+<table>
+<thead>
+<tr>
+	<th style="width:7%; text-align:center;">Sr No.</th>
+	<th style="width:19%; text-align:center;">Part Code</th>
+	<th style="width:25%; text-align:center;">Item Description</th>
+	<th style="width:4%; text-align:center;">Qty</th>
+	<th style="width:12%; text-align:center;">Accepted Qty</th>
+	<th style="width:11%; text-align:center;">Rejected Qty</th>
+	<th style="width:13%; text-align:center;">Type of Issue</th>
+	<th style="width:11%; text-align:center;">Reason</th>
+</tr>
+</thead>
+<tbody>{items_rows}</tbody>
+</table>
+
+<div style="margin-top:12px;">
+	<strong>NOTES:</strong>
+	{notes_html}
+</div>
+
+</body>
+</html>"""
 
 
 class QualityClearance(Document):
@@ -103,6 +256,8 @@ class QualityClearance(Document):
     def get_items_from_grn(self):
         if self.grn_name:
             grn = frappe.get_doc("Purchase Receipt", self.grn_name)
+            self.supplier = grn.supplier
+            self.supplier_name = grn.supplier_name
             self.project = grn.project
             self.project_no = frappe.db.get_value("Project", self.project, "name")
             self.project_name = frappe.db.get_value("Project", self.project, "project_name")

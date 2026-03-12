@@ -6,6 +6,21 @@ frappe.ui.form.on('Quality Clearance', {
         // Make supplier read-only once the document has been saved
         if (!frm.is_new()) {
             frm.set_df_property('supplier', 'read_only', 1);
+
+            frm.add_custom_button('Print QC', function() {
+                frappe.call({
+                    method: 'clevertech.clevertech.doctype.quality_clearance.quality_clearance.get_qc_print_html',
+                    args: { doc_name: frm.doc.name },
+                    callback: function(r) {
+                        if (r.message) {
+                            const blob = new Blob([r.message], { type: 'text/html' });
+                            const url = URL.createObjectURL(blob);
+                            const w = window.open(url, '_blank');
+                            setTimeout(() => URL.revokeObjectURL(url), 10000);
+                        }
+                    }
+                });
+            });
         }
     },
     type: function(frm) {
