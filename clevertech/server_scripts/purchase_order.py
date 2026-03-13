@@ -20,7 +20,7 @@ def before_validate(doc, method):
         # Apply logic
         if requires_inspection:
             row.warehouse = qc_accepted
-        else:
+        elif not row.warehouse:
             row.warehouse = default_store
 #    fetch_payment_terms(doc)
 

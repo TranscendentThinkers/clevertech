@@ -9,6 +9,11 @@ Functions:
 fetch_mode values:
   "remaining" — only items with no active RFQ (default)
   "all"       — all items except those with a submitted PO
+
+Partial quantity handling:
+  - PO qty < MR qty  → item included with remaining qty (MR qty - PO qty)
+  - RFQ qty < rem qty → item treated as no_rfq for remaining qty (rem - RFQ qty)
+  - Fully ordered items (PO qty >= MR qty) are always excluded
 """
 
 import frappe
@@ -19,17 +24,23 @@ from frappe.model.mapper import get_mapped_doc
 def _get_mr_item_buckets(mr_name):
     """
     For a given MR, return three sets of MR item names:
-      - has_po      : items with a submitted PO (always excluded)
-      - has_rfq_no_po : items with active RFQ but no submitted PO (user choice)
-      - no_rfq      : items with no active RFQ and no PO (always included)
-    Also returns rfq_nos: list of RFQ numbers for items in has_rfq_no_po.
+      - has_po        : items fully ordered via submitted PO (always excluded)
+      - has_rfq_no_po : items fully covered by active RFQ but no submitted PO (user choice)
+      - no_rfq        : items with no active RFQ and no full PO (always included)
+    Also returns:
+      - rfq_nos       : list of RFQ numbers for items in has_rfq_no_po
+      - remaining_qty : dict of {mr_item_name: remaining_qty} for partial PO/RFQ items
+    Partial quantities are considered:
+      - PO qty < MR qty → item included with remaining qty (MR qty - PO qty)
+      - RFQ qty < MR qty → item treated as no_rfq for the remaining qty
     """
     all_items = frappe.get_all(
         "Material Request Item",
         filters={"parent": mr_name},
-        fields=["name", "item_code"]
+        fields=["name", "item_code", "qty"]
     )
     all_item_names = [i.name for i in all_items]
+    mr_qty_map = {i.name: i.qty for i in all_items}
 
     if not all_item_names:
         return {
@@ -37,39 +48,74 @@ def _get_mr_item_buckets(mr_name):
             "has_po": set(),
             "has_rfq_no_po": set(),
             "no_rfq": set(),
-            "rfq_nos": []
+            "rfq_nos": [],
+            "remaining_qty": {}
         }
 
-    # Items with submitted PO
+    # Sum of submitted PO qty per MR item
     po_rows = frappe.db.sql("""
-        SELECT DISTINCT poi.material_request_item
+        SELECT poi.material_request_item, SUM(poi.qty) as ordered_qty
         FROM `tabPurchase Order Item` poi
         INNER JOIN `tabPurchase Order` po ON po.name = poi.parent
         WHERE poi.material_request_item IN %(names)s
         AND po.docstatus = 1
+        GROUP BY poi.material_request_item
     """, {"names": all_item_names}, as_dict=True)
-    has_po = {r.material_request_item for r in po_rows}
+    po_qty_map = {r.material_request_item: r.ordered_qty for r in po_rows}
 
-    # Items with active RFQ (docstatus < 2)
+    # Sum of active RFQ qty per MR item (docstatus < 2)
     rfq_rows = frappe.db.sql("""
-        SELECT DISTINCT rfqi.material_request_item, rfqi.parent as rfq_no
+        SELECT rfqi.material_request_item, SUM(rfqi.qty) as rfq_qty,
+               GROUP_CONCAT(DISTINCT rfqi.parent) as rfq_nos_str
         FROM `tabRequest for Quotation Item` rfqi
         INNER JOIN `tabRequest for Quotation` rfq ON rfq.name = rfqi.parent
         WHERE rfqi.material_request_item IN %(names)s
         AND rfq.docstatus < 2
+        GROUP BY rfqi.material_request_item
     """, {"names": all_item_names}, as_dict=True)
-    has_rfq = {r.material_request_item for r in rfq_rows}
-    rfq_nos = list({r.rfq_no for r in rfq_rows if r.material_request_item not in has_po})
+    rfq_qty_map = {r.material_request_item: r.rfq_qty for r in rfq_rows}
+    rfq_nos_map = {r.material_request_item: r.rfq_nos_str for r in rfq_rows}
 
-    has_rfq_no_po = has_rfq - has_po
-    no_rfq = {i.name for i in all_items} - has_rfq - has_po
+    has_po = set()
+    has_rfq_no_po = set()
+    no_rfq = set()
+    remaining_qty = {}
+    rfq_nos = set()
+
+    for item in all_items:
+        name = item.name
+        mr_qty = mr_qty_map[name]
+        ordered_qty = po_qty_map.get(name, 0)
+        rfq_qty = rfq_qty_map.get(name, 0)
+
+        if ordered_qty >= mr_qty:
+            # Fully ordered via PO — always exclude
+            has_po.add(name)
+        else:
+            # Remaining qty after PO
+            rem = mr_qty - ordered_qty
+            remaining_qty[name] = rem
+
+            if rfq_qty >= rem:
+                # Remaining qty fully covered by RFQ — user choice
+                has_rfq_no_po.add(name)
+                for rfq_no in (rfq_nos_map.get(name) or "").split(","):
+                    if rfq_no.strip():
+                        rfq_nos.add(rfq_no.strip())
+            else:
+                # Not fully covered by RFQ — always include
+                no_rfq.add(name)
+                # Adjust remaining qty further if partial RFQ exists
+                if rfq_qty > 0:
+                    remaining_qty[name] = rem - rfq_qty
 
     return {
         "all_items": all_items,
         "has_po": has_po,
         "has_rfq_no_po": has_rfq_no_po,
         "no_rfq": no_rfq,
-        "rfq_nos": rfq_nos
+        "rfq_nos": list(rfq_nos),
+        "remaining_qty": remaining_qty
     }
 
 
@@ -105,6 +151,8 @@ def make_request_for_quotation(source_name, target_doc=None, fetch_mode="remaini
         # "remaining" — exclude items with active RFQ or submitted PO
         excluded_set = buckets["has_po"] | buckets["has_rfq_no_po"]
 
+    remaining_qty = buckets["remaining_qty"]
+
     doclist = get_mapped_doc(
         "Material Request",
         source_name,
@@ -121,12 +169,90 @@ def make_request_for_quotation(source_name, target_doc=None, fetch_mode="remaini
                     ["parent", "material_request"],
                     ["project", "project_name"],
                 ],
+                "postprocess": lambda source, target, parent: remaining_qty.get(source.name) and setattr(target, "qty", remaining_qty[source.name]),
             },
         },
         target_doc,
     )
 
     return doclist
+
+
+@frappe.whitelist()
+def check_multi_mr_rfq_status(mr_names):
+    """
+    Aggregate bucket counts across multiple MRs.
+    mr_names: JSON list of MR names.
+    """
+    if isinstance(mr_names, str):
+        mr_names = frappe.parse_json(mr_names)
+
+    total = has_po = has_rfq_no_po = no_rfq = 0
+    rfq_nos = set()
+
+    for mr_name in mr_names:
+        b = _get_mr_item_buckets(mr_name)
+        total         += len(b["all_items"])
+        has_po        += len(b["has_po"])
+        has_rfq_no_po += len(b["has_rfq_no_po"])
+        no_rfq        += len(b["no_rfq"])
+        rfq_nos.update(b["rfq_nos"])
+
+    return {
+        "total": total,
+        "has_po": has_po,
+        "has_rfq_no_po": has_rfq_no_po,
+        "no_rfq": no_rfq,
+        "rfq_nos": list(rfq_nos),
+    }
+
+
+@frappe.whitelist()
+def get_items_for_rfq_append(mr_names, fetch_mode="remaining"):
+    """
+    Return mapped RFQ item dicts from multiple MRs without saving.
+    The client appends these into the form in memory — user saves manually.
+    """
+    if isinstance(mr_names, str):
+        mr_names = frappe.parse_json(mr_names)
+
+    target_doc = None
+
+    for mr_name in mr_names:
+        buckets = _get_mr_item_buckets(mr_name)
+        if fetch_mode == "all":
+            excluded_set = buckets["has_po"]
+        else:
+            excluded_set = buckets["has_po"] | buckets["has_rfq_no_po"]
+
+        remaining_qty = buckets["remaining_qty"]
+
+        target_doc = get_mapped_doc(
+            "Material Request",
+            mr_name,
+            {
+                "Material Request": {
+                    "doctype": "Request for Quotation",
+                    "validation": {"docstatus": ["=", 1], "material_request_type": ["=", "Purchase"]},
+                },
+                "Material Request Item": {
+                    "doctype": "Request for Quotation Item",
+                    "condition": lambda row, exc=excluded_set: row.name not in exc,
+                    "field_map": [
+                        ["name", "material_request_item"],
+                        ["parent", "material_request"],
+                        ["project", "project_name"],
+                    ],
+                    "postprocess": lambda source, target, parent, rq=remaining_qty: rq.get(source.name) and setattr(target, "qty", rq[source.name]),
+                },
+            },
+            target_doc,
+        )
+
+    if not target_doc:
+        return []
+
+    return [item.as_dict() for item in target_doc.items]
 
 
 @frappe.whitelist()
