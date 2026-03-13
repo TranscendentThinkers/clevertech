@@ -804,30 +804,30 @@ def clear_selection_table_links(docname):
 
 
 def get_last_purchase_details(item_code):
-    """Get the last purchase rate and supplier for an item"""
+    """Get the last purchase rate and supplier for an item from the latest submitted Purchase Order"""
     last_purchase = frappe.db.sql("""
         SELECT
-            pii.rate,
-            pi.supplier,
-            pi.posting_date,
-            pi.currency
+            poi.rate,
+            po.supplier,
+            po.transaction_date,
+            po.currency
         FROM
-            `tabPurchase Invoice Item` pii
+            `tabPurchase Order Item` poi
         INNER JOIN
-            `tabPurchase Invoice` pi ON pii.parent = pi.name
+            `tabPurchase Order` po ON poi.parent = po.name
         WHERE
-            pii.item_code = %(item_code)s
-            AND pi.docstatus = 1
+            poi.item_code = %(item_code)s
+            AND po.docstatus = 1
         ORDER BY
-            pi.posting_date DESC, pi.creation DESC
+            po.transaction_date DESC, po.creation DESC
         LIMIT 1
     """, {"item_code": item_code}, as_dict=True)
 
     if last_purchase:
         supplier_name = frappe.db.get_value("Supplier", last_purchase[0].supplier, "supplier_name")
         currency_symbol = frappe.db.get_value("Currency", last_purchase[0].currency, "symbol") or ""
-        rate = last_purchase[0].rate
-        formatted_rate = f"{currency_symbol}{rate}" if currency_symbol else str(rate)
+        rate = last_purchase[0].rate or 0
+        formatted_rate = f"{currency_symbol}{rate:.2f}" if currency_symbol else f"{rate:.2f}"
         return {
             "rate": formatted_rate,
             "supplier": supplier_name or last_purchase[0].supplier

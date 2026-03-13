@@ -204,6 +204,6 @@ def set_default_warehouses_from_item_defaults(doc, method=None):
                     default_warehouse = d.default_warehouse
                     break
 
-        # Apply the warehouse to the row
-        if default_warehouse:
+        # Apply the warehouse to the row only if not already set by the user
+        if default_warehouse and not row.warehouse:
             row.warehouse = default_warehouse
