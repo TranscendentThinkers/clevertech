@@ -1,179 +1,223 @@
+import difflib
+
 import frappe
 import pandas as pd
 from frappe.utils import getdate
 
 
+# =========================================================
+# FILE LOADER
+# =========================================================
+
+def _load_receipt_df(file_url):
+    file_doc = frappe.get_doc("File", {"file_url": file_url})
+    return pd.read_excel(file_doc.get_full_path())
+
+
+# =========================================================
+# PARSER — splits rows into receipt blocks
+# Each block has an `issues` list; empty = can be imported.
+# =========================================================
+
+def _parse_receipt_blocks(df):
+    """
+    Row types in the Receipt Excel:
+      1. Date + Credit     → new receipt block
+      2. "new ref" row     → sets reference_no
+      3. "bank ..." row    → sets bank account
+      4. Remarks row       → finalizes block (text len > 5, anything else)
+    """
+    blocks = []
+    current = None
+
+    def flush():
+        if not current:
+            return
+        issues = []
+        if not current["customer"]:
+            issues.append(f"Customer not found: {current['customer_name']}")
+        if not current["reference_no"]:
+            issues.append(f"Missing reference no")
+        if not current["bank_account"]:
+            bank_label = current["bank_name"] or "not identified"
+            issues.append(f"Bank account not found: {bank_label}")
+        if current["amount"] <= 0:
+            issues.append("Amount is zero")
+        current["issues"] = issues
+        blocks.append(dict(current))
+
+    for _, row in df.iterrows():
+        date        = row.get("Date")
+        particulars = row.get("Particulars")
+        ref_value   = row.get("Unnamed: 2")
+        credit      = row.get("Credit")
+
+        try:
+            # ---- New receipt block ----
+            if pd.notna(date) and pd.notna(credit):
+                flush()
+                customer_name = str(particulars).strip() if pd.notna(particulars) else ""
+                customer = frappe.db.get_value("Customer", {"customer_name": customer_name}, "name")
+                current = {
+                    "date":          getdate(date),
+                    "customer_name": customer_name,
+                    "customer":      customer,
+                    "amount":        float(credit),
+                    "bank_name":     None,
+                    "bank_account":  None,
+                    "reference_no":  None,
+                    "voucher_no":    None,
+                    "remarks":       "",
+                    "issues":        [],
+                }
+                continue
+
+            if not current:
+                continue
+
+            # ---- Reference row ----
+            if isinstance(particulars, str) and particulars.strip().lower() == "new ref":
+                if pd.notna(ref_value):
+                    current["reference_no"] = str(ref_value).strip()
+                continue
+
+            # ---- Bank row ----
+            if isinstance(particulars, str) and "bank" in particulars.lower():
+                bank_name = particulars.strip()
+                current["bank_name"] = bank_name
+                account_name = f"{bank_name} - CT"
+                if frappe.db.exists("Account", account_name):
+                    current["bank_account"] = account_name
+                continue
+
+            # ---- Remarks / finalize row ----
+            if isinstance(particulars, str) and len(particulars.strip()) > 5:
+                current["remarks"] = particulars.strip()
+                flush()
+                current = None
+
+        except Exception:
+            pass
+
+    flush()
+    return blocks
+
+
+# =========================================================
+# API 1 — VALIDATE  (pre-flight, no PEs created)
+# =========================================================
+
+@frappe.whitelist()
+def validate_receipt_excel(file_url):
+    """
+    Returns:
+    {
+        total, matched, skipped,
+        unresolved: [{name, issue_type, context, suggestions}]
+    }
+    """
+    df = _load_receipt_df(file_url)
+    blocks = _parse_receipt_blocks(df)
+
+    matched = sum(1 for b in blocks if not b["issues"])
+    skipped = len(blocks) - matched
+
+    # Build deduplicated unresolved list
+    seen = set()
+    unresolved_list = []
+    for b in blocks:
+        for issue in b["issues"]:
+            key = (b["customer_name"], issue)
+            if key in seen:
+                continue
+            seen.add(key)
+            unresolved_list.append({
+                "name":       b["customer_name"],
+                "issue_type": issue,
+                "context":    f"₹{b['amount']:,.2f} on {b['date']}",
+                "suggestions": [],
+            })
+
+    # Fuzzy suggestions — customers only (for "Customer not found" issues)
+    missing_customer_names = list({
+        b["customer_name"] for b in blocks if not b["customer"]
+    })
+    if missing_customer_names:
+        all_customers = frappe.db.sql_list(
+            "SELECT customer_name FROM `tabCustomer` WHERE disabled = 0"
+        )
+        sugg_map = {
+            name: difflib.get_close_matches(name, all_customers, n=3, cutoff=0.6)
+            for name in missing_customer_names
+        }
+        for u in unresolved_list:
+            if "Customer not found" in u["issue_type"]:
+                u["suggestions"] = sugg_map.get(u["name"], [])
+
+    return {
+        "total":      len(blocks),
+        "matched":    matched,
+        "skipped":    skipped,
+        "unresolved": unresolved_list,
+    }
+
+
+# =========================================================
+# API 2 — IMPORT  (creates PEs for matched blocks only)
+# =========================================================
+
 @frappe.whitelist()
 def import_receipt_excel(file_url):
+    df = _load_receipt_df(file_url)
+    blocks = _parse_receipt_blocks(df)
 
-    file_path = frappe.get_site_path(
-        "private", "files", file_url.split("/")[-1]
-    )
+    created   = 0
+    skipped   = 0
+    duplicate = 0
 
-    df = pd.read_excel(file_path)
-
-    receipts = []
-
-    # 🔴 GLOBAL ERROR COLLECTORS
-    missing_customers = set()
-    missing_accounts = set()
-    missing_reference = set()
-
-    current_receipt = None
-
-    # ======================================================
-    # 🔍 PASS 1 → VALIDATION ONLY
-    # ======================================================
-    for idx, row in df.iterrows():
-
-        date = row.get("Date")
-        particulars = row.get("Particulars")
-        ref_value = row.get("Unnamed: 2")
-        credit = row.get("Credit")
-
-        # -------------------------------
-        # 1️⃣ MAIN RECEIPT ROW
-        # -------------------------------
-        if pd.notna(date) and pd.notna(credit):
-
-            current_receipt = {
-                "date": getdate(date),
-                "customer_name": str(particulars).strip() if pd.notna(particulars) else None,
-                "amount": float(credit),
-                "bank": None,
-                "remarks": "",
-                "reference_no": None,
-                "reference_date": getdate(date)
-            }
+    for b in blocks:
+        if b["issues"]:
+            skipped += 1
             continue
-
-        if not current_receipt:
+        # Duplicate check — reference_no is the bank transaction identifier
+        ref = b["reference_no"]
+        if ref and frappe.db.exists("Payment Entry", {"reference_no": ref, "payment_type": "Receive"}):
+            duplicate += 1
             continue
+        try:
+            _create_receipt_entry(b)
+            created += 1
+        except Exception:
+            skipped += 1
 
-        # -------------------------------
-        # 2️⃣ REFERENCE ROW
-        # -------------------------------
-        if isinstance(particulars, str) and particulars.strip().lower() == "new ref":
-            if pd.notna(ref_value):
-                current_receipt["reference_no"] = str(ref_value).strip()
-            continue
+    parts = [f"✅ {created} created"]
+    if skipped:
+        parts.append(f"⚠️ {skipped} skipped (unresolved / missing data)")
+    if duplicate:
+        parts.append(f"🔁 {duplicate} duplicate (reference no already exists)")
 
-        # -------------------------------
-        # 3️⃣ BANK ROW
-        # -------------------------------
-        if isinstance(particulars, str) and "bank" in particulars.lower():
-            current_receipt["bank"] = particulars.strip()
-            continue
-
-        # -------------------------------
-        # 4️⃣ REMARKS ROW → FINALIZE
-        # -------------------------------
-        if isinstance(particulars, str) and len(particulars.strip()) > 5:
-
-            current_receipt["remarks"] = particulars.strip()
-
-            # -------- VALIDATIONS --------
-
-            # Customer validation
-            customer = frappe.db.get_value(
-                "Customer",
-                {"customer_name": current_receipt["customer_name"]},
-                "name"
-            )
-            if not customer:
-                missing_customers.add(current_receipt["customer_name"])
-
-            # Reference validation
-            if not current_receipt["reference_no"]:
-                missing_reference.add(current_receipt["customer_name"])
-
-            # Bank account validation
-            if current_receipt["bank"]:
-                account_name = f"{current_receipt['bank']} - CT"
-                if not frappe.db.exists("Account", account_name):
-                    missing_accounts.add(account_name)
-            else:
-                missing_accounts.add("Bank not identified")
-
-            receipts.append(current_receipt)
-            current_receipt = None
-
-    # ======================================================
-    # ❌ STOP IF ERRORS FOUND
-    # ======================================================
-    if missing_customers or missing_accounts or missing_reference:
-
-        msg = "<b>❌ PAYMENT EXCEL VALIDATION FAILED</b><br><br>"
-
-        if missing_customers:
-            msg += "<b>Missing Customers:</b><br>"
-            for c in sorted(missing_customers):
-                msg += f"- {c}<br>"
-
-        if missing_accounts:
-            msg += "<br><b>Missing Bank Accounts:</b><br>"
-            for a in sorted(missing_accounts):
-                msg += f"- {a}<br>"
-
-        if missing_reference:
-            msg += "<br><b>Missing Reference No:</b><br>"
-            for r in sorted(missing_reference):
-                msg += f"- {r}<br>"
-
-        frappe.log_error(
-            message=msg.replace("<br>", "\n"),
-            title="Receipt Excel Validation Errors"
-        )
-
-        frappe.throw(msg)
-
-    # ======================================================
-    # ✅ PASS 2 → CREATE PAYMENT ENTRIES
-    # ======================================================
-    created = 0
-
-    for data in receipts:
-        create_payment_entry(data)
-        created += 1
-
-    frappe.msgprint(
-        f"✅ <b>{created}</b> Receipt Payment Entries created successfully."
-    )
+    return {"created": created, "skipped": skipped, "duplicate": duplicate, "message": " | ".join(parts)}
 
 
-# ======================================================
-# ✅ CREATE PAYMENT ENTRY
-# ======================================================
-def create_payment_entry(data):
+# =========================================================
+# CREATOR
+# =========================================================
 
-    customer = frappe.db.get_value(
-        "Customer",
-        {"customer_name": data["customer_name"]},
-        "name"
-    )
-
-    paid_to_account = f"{data['bank']} - CT"
-
+def _create_receipt_entry(data):
     pe = frappe.new_doc("Payment Entry")
-    pe.payment_type = "Receive"
-    pe.party_type = "Customer"
-    pe.party = customer
-    pe.posting_date = data["date"]
-
-    pe.paid_amount = data["amount"]
-    pe.received_amount = data["amount"]
-
-    pe.source_exchange_rate = 1
-    pe.target_exchange_rate = 1
-
-    pe.paid_to = paid_to_account
+    pe.payment_type          = "Receive"
+    pe.party_type            = "Customer"
+    pe.party                 = data["customer"]
+    pe.posting_date          = data["date"]
+    pe.paid_amount           = data["amount"]
+    pe.received_amount       = data["amount"]
+    pe.source_exchange_rate  = 1
+    pe.target_exchange_rate  = 1
+    pe.paid_to               = data["bank_account"]
     pe.paid_to_account_currency = frappe.get_cached_value(
-        "Account", paid_to_account, "account_currency"
+        "Account", data["bank_account"], "account_currency"
     )
-
-    pe.reference_no = data["reference_no"]
-    pe.reference_date = data["reference_date"]
-    pe.remarks = data["remarks"]
-
+    pe.reference_no          = data["reference_no"]
+    pe.reference_date        = data["date"]
+    pe.remarks               = data["remarks"]
     pe.insert(ignore_permissions=True)
-
