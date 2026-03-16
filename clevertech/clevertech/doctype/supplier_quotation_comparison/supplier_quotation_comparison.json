@@ -56,7 +56,6 @@
    "label": "Comparison Report"
   },
   {
-   "allow_on_submit": 1,
    "fieldname": "supplier_selection_table",
    "fieldtype": "Table",
    "label": "Supplier Selection Table",
@@ -203,7 +202,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-03-16 12:38:44.472791",
+ "modified": "2026-03-16 16:17:01.582795",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
