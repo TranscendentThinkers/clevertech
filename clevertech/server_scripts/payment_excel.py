@@ -1,66 +1,46 @@
+import difflib
+import re
+
 import frappe
 from openpyxl import load_workbook
 from frappe.utils import getdate
 import xlrd
 import os
-import re
 
-# =========================================================
-# GLOBAL ERROR COLLECTOR
-# =========================================================
-GLOBAL_ERRORS = {
-    "missing_accounts": set(),
-    "missing_suppliers": set(),
-    "format_errors": []
-}
 
 # =========================================================
 # HELPERS
 # =========================================================
-def normalize_name(name):
-    return name.lower().replace(".", "").replace(",", "").replace(" ", " ").strip()
 
-def find_supplier_fuzzy(name):
-    if not name:
-        return None
-    norm = normalize_name(name)
-    suppliers = frappe.get_all("Supplier", fields=["name", "supplier_name"])
-    for s in suppliers:
-        if normalize_name(s.supplier_name) == norm:
-            return s.name
-    return None
+def _normalize(name):
+    return name.lower().replace(".", "").replace(",", "").strip()
 
-def parse_amount(val):
+def _parse_amount(val):
     """Parse numeric or string amounts like '11246.00 Cr' → 11246.0"""
     if val is None:
-        return 0
+        return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    # Strip text like ' Cr', ' Dr' and commas
     cleaned = re.sub(r'[^\d.]', '', str(val).replace(",", ""))
     try:
         return float(cleaned)
     except ValueError:
-        return 0
+        return 0.0
+
 
 # =========================================================
-# MAIN API
+# FILE LOADER
 # =========================================================
-@frappe.whitelist()
-def upload_payment_excel(file_url):
-    file_doc = frappe.get_doc("File", {"file_url": file_url})
+
+def _load_payment_rows(file_url):
+    file_doc  = frappe.get_doc("File", {"file_url": file_url})
     file_path = file_doc.get_full_path()
-
-    # =============================
-    # FILE FORMAT AUTO DETECTION
-    # =============================
-    ext = os.path.splitext(file_path)[1].lower()
-    rows = []
+    ext       = os.path.splitext(file_path)[1].lower()
+    rows      = []
 
     if ext == ".xlsx":
         wb = load_workbook(file_path, data_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
+        rows = list(wb.active.iter_rows(values_only=True))
     elif ext == ".xls":
         book = xlrd.open_workbook(file_path)
         sheet = book.sheet_by_index(0)
@@ -69,191 +49,273 @@ def upload_payment_excel(file_url):
     else:
         frappe.throw("❌ Unsupported file format. Upload .xls or .xlsx only.")
 
-    # =========================================================
-    # CONFIG
-    # =========================================================
-    COMPANY = frappe.defaults.get_user_default("Company")
+    return rows
+
+
+# =========================================================
+# COLUMN CONSTANTS
+# Col 0: Date | Col 1: Particulars | Col 5: Vch No.
+# Col 6: Debit Amount | Col 7: Credit Amount
+# =========================================================
+
+COL_DATE        = 0
+COL_PARTICULARS = 1
+COL_VCH_NO      = 5
+COL_DEBIT       = 6
+COL_CREDIT      = 7
+
+EXCLUDE_PREFIX = ["agst ref", "against ref", "new ref", "reference", "ref", "bill ref"]
+INCLUDE_KEYWORDS = [
+    "being", "neft", "imps", "rtgs", "upi", "cms",
+    "flight", "ticket", "pnr", "booking", "travel",
+    "payment", "transfer", "air india", "indigo", "spicejet",
+]
+
+
+# =========================================================
+# PARSER — splits rows into payment blocks
+# =========================================================
+
+def _parse_payment_blocks(rows):
+    """
+    Returns list of blocks:
+    {
+        date, party_name, party (ERP supplier name — exact match only),
+        paid_from (ERP account name or None), paid_from_name (raw text),
+        paid_amount, voucher_no, remarks,
+        has_unresolved: bool   (True if supplier or paid_from missing)
+    }
+    """
+    COMPANY        = frappe.defaults.get_user_default("Company")
+    PAID_TO        = "Creditors - CT"
     MODE_OF_PAYMENT = "NEFT"
-    PAID_TO_ACCOUNT = "Creditors - CT"  # payable
 
-    # =========================================================
-    # COLUMN INDICES — adjusted to match actual Excel layout:
-    # Col 0: Date | Col 1: Particulars | Col 4: Vch Type
-    # Col 5: Vch No. | Col 6: Debit Amount | Col 7: Credit Amount
-    # =========================================================
-    COL_DATE        = 0
-    COL_PARTICULARS = 1
-    COL_VCH_NO      = 5
-    COL_DEBIT       = 6
-    COL_CREDIT      = 7
-
-    # =========================================================
-    # PROCESSING
-    # =========================================================
-    created = 0
+    blocks      = []
     current_doc = None
 
-    def flush_payment():
-        nonlocal created
+    def flush():
         if not current_doc:
             return
+        has_unresolved = (
+            not current_doc.get("party")
+            or not current_doc.get("paid_from")
+            or current_doc.get("paid_amount", 0) <= 0
+        )
+        blocks.append({**current_doc, "has_unresolved": has_unresolved,
+                        "company": COMPANY, "paid_to": PAID_TO,
+                        "mode_of_payment": MODE_OF_PAYMENT})
 
-        if not current_doc.get("party"):
-            GLOBAL_ERRORS["missing_suppliers"].add(current_doc.get("party_name", ""))
-            return
-
-        if current_doc.get("paid_amount", 0) <= 0:
-            GLOBAL_ERRORS["format_errors"].append(
-                f"Voucher {current_doc.get('voucher_no')} : Paid amount is zero"
-            )
-            return
-
-        if not current_doc.get("paid_from"):
-            GLOBAL_ERRORS["format_errors"].append(
-                f"Voucher {current_doc.get('voucher_no')} : Paid From account not found"
-            )
-            return
-
-        # ---------------- CREATE PAYMENT ENTRY ----------------
-        pe = frappe.new_doc("Payment Entry")
-        pe.payment_type = "Pay"
-        pe.posting_date = current_doc["date"]
-        pe.company = COMPANY
-        pe.mode_of_payment = MODE_OF_PAYMENT
-        pe.party_type = "Supplier"
-        pe.party = current_doc["party"]
-        pe.party_name = current_doc["party_name"]
-        pe.paid_from = current_doc["paid_from"]
-        pe.paid_to = PAID_TO_ACCOUNT
-        pe.paid_amount = current_doc["paid_amount"]
-        pe.received_amount = current_doc["paid_amount"]
-        pe.reference_no = current_doc.get("reference_no")
-        pe.reference_date = current_doc.get("date")
-        pe.custom_tally_voucher_no = current_doc.get("voucher_no")
-        pe.remarks = current_doc.get("remarks")
-        pe.docstatus = 0  # Draft
-        pe.insert(ignore_permissions=True)
-        created += 1
-
-    # -------- PROCESS SOURCE (START FROM ROW 8, index 7) --------
-    for idx, r in enumerate(rows[7:], start=8):
+    for r in rows[7:]:   # data starts at row 8 (index 7)
         try:
-            # Guard: skip rows that don't have enough columns
             if len(r) < 8:
                 continue
 
             date_val    = r[COL_DATE]
             particulars = r[COL_PARTICULARS]
             voucher_no  = r[COL_VCH_NO]
-            debit       = parse_amount(r[COL_DEBIT])
-            credit      = parse_amount(r[COL_CREDIT])
+            debit       = _parse_amount(r[COL_DEBIT])
+            credit      = _parse_amount(r[COL_CREDIT])
+            text        = str(particulars).strip() if particulars else ""
 
-            text = str(particulars).strip() if particulars else ""
-
-            # -------- New Payment Voucher (row has a date) --------
+            # ---- New payment block ----
             if date_val:
-                flush_payment()
+                flush()
+                # Exact supplier lookup only — fuzzy is for display in validate
+                supplier = frappe.db.get_value("Supplier", {"supplier_name": text}, "name")
                 current_doc = {
-                    "date": getdate(date_val),
-                    "party_name": text,
-                    "party": None,
-                    "reference_no": "",
-                    "remarks": "",
-                    "voucher_no": voucher_no,
-                    "paid_from": None,
-                    "paid_amount": 0
+                    "date":          getdate(date_val),
+                    "party_name":    text,
+                    "party":         supplier,
+                    "paid_from":     None,
+                    "paid_from_name": None,
+                    "paid_amount":   0.0,
+                    "voucher_no":    str(voucher_no).strip() if voucher_no else None,
+                    "remarks":       "",
                 }
-
-                # fuzzy supplier match
-                sup = find_supplier_fuzzy(text)
-                if sup:
-                    current_doc["party"] = sup
-                else:
-                    GLOBAL_ERRORS["missing_suppliers"].add(text)
                 continue
 
             if not current_doc:
                 continue
 
-            # -------- CREDIT → Bank/Cash (Paid From) --------
+            # ---- Credit row → Bank/Cash account (Paid From) ----
             if credit and text:
                 acc = frappe.db.get_value("Account", {"account_name": text}, "name")
                 if acc:
-                    current_doc["paid_from"] = acc
-                    current_doc["paid_amount"] = credit
+                    current_doc["paid_from"]      = acc
+                    current_doc["paid_from_name"] = text
+                    current_doc["paid_amount"]    = credit
                 else:
-                    GLOBAL_ERRORS["missing_accounts"].add(text)
+                    current_doc["paid_from_name"] = text   # unresolved, record raw name
 
-            # -------- DEBIT → Alternative amount detection --------
+            # ---- Debit row → fallback amount ----
             elif debit and current_doc["paid_amount"] == 0:
                 current_doc["paid_amount"] = debit
 
-            # -------- REMARKS LOGIC --------
+            # ---- Remarks logic ----
             if text and not date_val and not debit and not credit:
                 low = text.lower()
-
-                # exclude supplier row
-                if normalize_name(text) == normalize_name(current_doc.get("party_name", "")):
+                if _normalize(text) == _normalize(current_doc.get("party_name", "")):
                     continue
-
-                # exclude bank/account row
-                acc_check = frappe.db.get_value("Account", {"account_name": text}, "name")
-                if acc_check:
+                if frappe.db.get_value("Account", {"account_name": text}, "name"):
                     continue
-
-                # exclude reference/helper rows
-                EXCLUDE_PREFIX = [
-                    "agst ref", "against ref", "new ref", "reference", "ref", "bill ref"
-                ]
                 if any(low.startswith(p) for p in EXCLUDE_PREFIX):
                     continue
-
-                # include only real narration keywords
-                INCLUDE_KEYWORDS = [
-                    "being", "neft", "imps", "rtgs", "upi", "cms",
-                    "flight", "ticket", "pnr", "booking", "travel",
-                    "payment", "transfer", "air india", "indigo", "spicejet"
-                ]
                 if not any(k in low for k in INCLUDE_KEYWORDS):
                     continue
-
-                # valid remark
                 if current_doc["remarks"]:
                     current_doc["remarks"] += " | "
                 current_doc["remarks"] += text
 
-        except Exception as e:
-            GLOBAL_ERRORS["format_errors"].append(f"Row {idx}: {str(e)}")
+        except Exception:
+            pass
+
+    flush()
+    return blocks
+
+
+# =========================================================
+# API 1 — VALIDATE  (pre-flight, no PEs created)
+# =========================================================
+
+@frappe.whitelist()
+def validate_payment_excel(file_url):
+    """
+    Returns:
+    {
+        total, matched, skipped,
+        unresolved: [{name, issue_type, context, suggestions}]
+    }
+    """
+    rows   = _load_payment_rows(file_url)
+    blocks = _parse_payment_blocks(rows)
+
+    matched = sum(1 for b in blocks if not b["has_unresolved"])
+    skipped = len(blocks) - matched
+
+    seen = set()
+    unresolved_list = []
+
+    for b in blocks:
+        if not b["has_unresolved"]:
             continue
+        vno = b.get("voucher_no") or b.get("party_name") or ""
 
-    # flush last record
-    flush_payment()
+        if not b["party"]:
+            key = ("supplier", b["party_name"])
+            if key not in seen:
+                seen.add(key)
+                unresolved_list.append({
+                    "name":        b["party_name"],
+                    "issue_type":  "Supplier not found",
+                    "context":     vno,
+                    "suggestions": [],
+                })
 
-    # =========================================================
-    # GLOBAL ERROR REPORTING
-    # =========================================================
-    if (GLOBAL_ERRORS["missing_accounts"] or
-        GLOBAL_ERRORS["missing_suppliers"] or
-        GLOBAL_ERRORS["format_errors"]):
+        if not b["paid_from"] and b.get("paid_from_name"):
+            key = ("account", b["paid_from_name"])
+            if key not in seen:
+                seen.add(key)
+                unresolved_list.append({
+                    "name":        b["paid_from_name"],
+                    "issue_type":  "Bank/Cash account not found",
+                    "context":     vno,
+                    "suggestions": [],
+                })
 
-        msg = "❌ PAYMENT EXCEL VALIDATION FAILED:\n\n"
+        if b["paid_amount"] <= 0:
+            key = ("amount", vno)
+            if key not in seen:
+                seen.add(key)
+                unresolved_list.append({
+                    "name":        vno,
+                    "issue_type":  "Paid amount is zero",
+                    "context":     vno,
+                    "suggestions": [],
+                })
 
-        if GLOBAL_ERRORS["missing_accounts"]:
-            msg += "MISSING ACCOUNTS:\n"
-            for a in sorted(GLOBAL_ERRORS["missing_accounts"]):
-                msg += f"  - {a}\n"
+    # Fuzzy suggestions for unresolved supplier names
+    missing_supplier_names = list({
+        b["party_name"] for b in blocks if not b["party"]
+    })
+    if missing_supplier_names:
+        all_suppliers = frappe.db.sql_list(
+            "SELECT supplier_name FROM `tabSupplier` WHERE disabled = 0"
+        )
+        all_accounts = frappe.db.sql_list(
+            "SELECT account_name FROM `tabAccount` WHERE disabled = 0"
+        )
+        all_names = all_suppliers + all_accounts
+        sugg_map = {
+            name: difflib.get_close_matches(name, all_names, n=3, cutoff=0.6)
+            for name in missing_supplier_names
+        }
+        for u in unresolved_list:
+            if u["issue_type"] == "Supplier not found":
+                u["suggestions"] = sugg_map.get(u["name"], [])
 
-        if GLOBAL_ERRORS["missing_suppliers"]:
-            msg += "\nMISSING SUPPLIERS:\n"
-            for s in sorted(GLOBAL_ERRORS["missing_suppliers"]):
-                msg += f"  - {s}\n"
+    return {
+        "total":      len(blocks),
+        "matched":    matched,
+        "skipped":    skipped,
+        "unresolved": unresolved_list,
+    }
 
-        if GLOBAL_ERRORS["format_errors"]:
-            msg += "\nFORMAT ERRORS:\n"
-            for e in GLOBAL_ERRORS["format_errors"]:
-                msg += f"  - {e}\n"
 
-        frappe.log_error(message=msg, title="Payment Entry Excel Validation Errors")
-        frappe.throw(msg)
+# =========================================================
+# API 2 — UPLOAD  (creates PEs for matched blocks only)
+# =========================================================
 
-    return f"✅ {created} Payment Entries created successfully in Draft status"
+@frappe.whitelist()
+def upload_payment_excel(file_url):
+    rows   = _load_payment_rows(file_url)
+    blocks = _parse_payment_blocks(rows)
+
+    created   = 0
+    skipped   = 0
+    duplicate = 0
+
+    for b in blocks:
+        if b["has_unresolved"]:
+            skipped += 1
+            continue
+        vno = b.get("voucher_no")
+        if vno and frappe.db.exists("Payment Entry", {"custom_tally_voucher_no": vno}):
+            duplicate += 1
+            continue
+        try:
+            _create_payment_entry(b)
+            created += 1
+        except Exception:
+            skipped += 1
+
+    parts = [f"✅ {created} created"]
+    if skipped:
+        parts.append(f"⚠️ {skipped} skipped (unresolved accounts/suppliers)")
+    if duplicate:
+        parts.append(f"🔁 {duplicate} duplicate (voucher no already exists)")
+
+    return {"created": created, "skipped": skipped, "duplicate": duplicate, "message": " | ".join(parts)}
+
+
+# =========================================================
+# CREATOR
+# =========================================================
+
+def _create_payment_entry(b):
+    pe = frappe.new_doc("Payment Entry")
+    pe.payment_type             = "Pay"
+    pe.posting_date             = b["date"]
+    pe.company                  = b["company"]
+    pe.mode_of_payment          = b["mode_of_payment"]
+    pe.party_type               = "Supplier"
+    pe.party                    = b["party"]
+    pe.party_name               = b["party_name"]
+    pe.paid_from                = b["paid_from"]
+    pe.paid_to                  = b["paid_to"]
+    pe.paid_amount              = b["paid_amount"]
+    pe.received_amount          = b["paid_amount"]
+    pe.reference_date           = b["date"]
+    pe.custom_tally_voucher_no  = b["voucher_no"]
+    pe.remarks                  = b["remarks"]
+    pe.docstatus                = 0
+    pe.insert(ignore_permissions=True)

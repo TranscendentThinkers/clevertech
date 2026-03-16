@@ -255,12 +255,15 @@ class SupplierQuotationComparison(Document):
             return
 
         # Get all supplier quotations for this RFQ
+        # distinct=True prevents duplicate rows caused by Frappe joining the SQ items child table
+        # (which also has a request_for_quotation field) — without it, one row is returned per item
         supplier_quotations = frappe.get_all(
             "Supplier Quotation",
             filters={
                 "request_for_quotation": self.request_for_quotation,
             },
             fields=["name", "supplier"],
+            distinct=True,
             order_by="name desc"
         )
 
@@ -970,8 +973,8 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
 
         po.items = items_to_keep
 
-        if hasattr(po, 'supplier_quotation_comparison'):
-            po.supplier_quotation_comparison = comparison_doc.name
+        if hasattr(po, 'custom_supplier_quotation_comparison'):
+            po.custom_supplier_quotation_comparison = comparison_doc.name
 
         po.docstatus = 0
         po.insert(ignore_permissions=False)
