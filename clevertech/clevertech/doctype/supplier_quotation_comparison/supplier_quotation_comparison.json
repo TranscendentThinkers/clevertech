@@ -92,6 +92,8 @@
   {
    "fieldname": "created_by",
    "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Created By",
    "options": "User"
   },
@@ -106,6 +108,8 @@
   {
    "fieldname": "project",
    "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "Project",
    "options": "Project"
   },
@@ -199,7 +203,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-03-14 15:23:52.613552",
+ "modified": "2026-03-16 12:38:44.472791",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
