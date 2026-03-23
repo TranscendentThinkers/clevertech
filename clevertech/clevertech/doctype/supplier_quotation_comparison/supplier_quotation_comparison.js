@@ -34,12 +34,16 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
         set_supplier_filter(frm);
     },
 
-    required_by_in_days: function(frm) {
-        if (frm.doc.required_by_in_days && frm.doc.required_by_in_days > 0) {
-            let required_by_date = frappe.datetime.add_days(frappe.datetime.get_today(), frm.doc.required_by_in_days);
-            frm.set_value('required_by_date', required_by_date);
-        }
-    },
+    // required_by_in_days: auto-calculation of required_by_date field removed.
+    // The PO schedule_date is now calculated at submit time on the server as:
+    //   today (submission date) + required_by_in_days
+    // Users can freely edit required_by_in_days before submitting.
+    // required_by_in_days: function(frm) {
+    //     if (frm.doc.required_by_in_days && frm.doc.required_by_in_days > 0) {
+    //         let required_by_date = frappe.datetime.add_days(frappe.datetime.get_today(), frm.doc.required_by_in_days);
+    //         frm.set_value('required_by_date', required_by_date);
+    //     }
+    // },
 
     fetch_report: function(frm) {
         if (!frm.doc.request_for_quotation) {
@@ -282,6 +286,24 @@ function clear_supplier_data(cdt, cdn) {
     frappe.model.set_value(cdt, cdn, "total_tax", 0);
 }
 
+// Format a number using Indian comma system (lakhs, crores)
+// e.g. 1234567.89 -> "12,34,567.89"
+function format_indian_currency(num) {
+    if (num === null || num === undefined || isNaN(Number(num))) return "N/A";
+    let n = Number(num);
+    let isNegative = n < 0;
+    n = Math.abs(n);
+    let [intPart, decPart] = n.toFixed(2).split(".");
+    // Indian grouping: last 3 digits, then groups of 2
+    if (intPart.length > 3) {
+        let last3 = intPart.slice(-3);
+        let rest = intPart.slice(0, -3);
+        rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ",");
+        intPart = rest + "," + last3;
+    }
+    return (isNegative ? "-" : "") + intPart + "." + decPart;
+}
+
 function render_comparison_from_table(frm) {
     const $wrapper = frm.fields_dict.comparison_report.$wrapper;
 
@@ -335,7 +357,7 @@ function render_comparison_from_table(frm) {
                         if (val === "No Quotation") {
                             dataRow[`${supplierName.trim()} - Rate`] = "No Quotation";
                         } else {
-                            dataRow[`${supplierName.trim()} - Rate`] = sym ? `${sym}${Number(val).toFixed(2)}` : Number(val).toFixed(2);
+                            dataRow[`${supplierName.trim()} - Rate`] = sym ? `${sym}${format_indian_currency(val)}` : format_indian_currency(val);
                         }
                     } else {
                         // Fallback for old data without currency_symbol
@@ -363,7 +385,7 @@ function render_comparison_from_table(frm) {
                         if (rateVal === "N/A" || rateVal === null || rateVal === undefined || rateVal === 0 || rateVal === "0") {
                             displayVal = "N/A";
                         } else {
-                            displayVal = sym ? `${sym}${Number(rateVal).toFixed(2)}` : Number(rateVal).toFixed(2);
+                            displayVal = sym ? `${sym}${format_indian_currency(rateVal)}` : format_indian_currency(rateVal);
                         }
                     } else {
                         // Fallback for old data stored as plain value
@@ -493,7 +515,7 @@ function build_html_table(columns, data) {
                 padding: 8px;
                 min-width: 80px;
                 max-width: 150px;
-                white-space: normal;
+                white-space: pre-wrap;
                 word-wrap: break-word;
                 vertical-align: top;
             }

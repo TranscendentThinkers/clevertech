@@ -22,12 +22,14 @@ class SupplierQuotationComparison(Document):
         # Skip if supplier_selection_table already has data (workflow transition)
         if self.is_new() and self.request_for_quotation and not self.supplier_selection_table:
             self.populate_items_table()
-            self.fetch_file_references()
+            # fetch_file_references removed from validate — now called on every Fetch Report instead
+            # self.fetch_file_references()
             self.fetch_rfq_fields()
         elif self.has_value_changed("request_for_quotation") and self.request_for_quotation:
             # Only repopulate if RFQ actually changed (not on workflow transitions)
             self.populate_items_table()
-            self.fetch_file_references()
+            # fetch_file_references removed from validate — now called on every Fetch Report instead
+            # self.fetch_file_references()
             self.fetch_rfq_fields()
 
     def on_submit(self):
@@ -44,9 +46,10 @@ class SupplierQuotationComparison(Document):
         if not self.created_by:
             frappe.throw(_("Created By is mandatory before submission. Please save the document first."))
 
-        # Validate required_by_date is not empty
-        if not self.required_by_date:
-            frappe.throw(_("Required By Date is mandatory before submission. Please set this field."))
+        # Validate required_by_in_days is set — PO schedule_date is calculated at submit time
+        # as today + required_by_in_days, so this field must be filled before submission
+        if not self.required_by_in_days or self.required_by_in_days <= 0:
+            frappe.throw(_("Required By (Days) is mandatory before submission. Please set the number of days."))
 
     def validate_request_for_quotations(self):
         rfq = self.request_for_quotation
@@ -129,6 +132,11 @@ class SupplierQuotationComparison(Document):
 
         if not cost_center:
             frappe.throw(_("Cost Center is mandatory for creating Purchase Orders. Please set the Cost Center field before submitting."))
+
+        # Calculate the PO schedule_date at submit time: today + required_by_in_days
+        # required_by_in_days can be edited freely before submission
+        required_by_in_days = self.get("required_by_in_days") or 0
+        po_schedule_date = add_days(today(), int(required_by_in_days)) if required_by_in_days else today()
 
         # Validate that all items have a supplier selected (not NA / zero rate)
         items_missing_supplier = []
@@ -216,7 +224,8 @@ class SupplierQuotationComparison(Document):
         created_pos = []
 
         for sq_name, items in supplier_quotation_map.items():
-            po = create_po_from_supplier_quotation(sq_name, items, self, project, cost_center, self.required_by_date)
+            # Pass po_schedule_date (calculated from today + required_by_in_days at submit time)
+            po = create_po_from_supplier_quotation(sq_name, items, self, project, cost_center, po_schedule_date)
             if po:
                 created_pos.append(po.name)
                 # Update selection table with PO reference
@@ -261,6 +270,7 @@ class SupplierQuotationComparison(Document):
             "Supplier Quotation",
             filters={
                 "request_for_quotation": self.request_for_quotation,
+                "docstatus": ["!=", 2]  # Exclude cancelled; include draft (0) and submitted (1)
             },
             fields=["name", "supplier"],
             distinct=True,
@@ -289,7 +299,7 @@ class SupplierQuotationComparison(Document):
                 })
 
     def fetch_rfq_fields(self):
-        """Fetch project, cost_center, required_by_in_days, and required_by_date from RFQ"""
+        """Fetch project, cost_center, and required_by_in_days from RFQ"""
         if not self.request_for_quotation:
             return
 
@@ -310,10 +320,9 @@ class SupplierQuotationComparison(Document):
         if required_by_in_days:
             self.required_by_in_days = required_by_in_days
 
-        # Fetch required_by_date from RFQ (schedule_date field)
-        required_by_date = rfq_doc.get("schedule_date")
-        if required_by_date:
-            self.required_by_date = required_by_date
+        # required_by_date is intentionally NOT fetched here.
+        # The PO schedule_date is calculated at submit time as: today() + required_by_in_days
+        # This ensures the date reflects when the PO is actually created, not when the RFQ was raised.
 
     def populate_items_table(self):
         if not self.request_for_quotation:
@@ -347,7 +356,7 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None,
             filters={
                 "request_for_quotation": rfq,
             },
-            fields=["name", "supplier", "modified", "grand_total"],
+            fields=["name", "supplier", "modified", "total"],  # pre-tax total for tiebreaking
             order_by="modified desc"
         )
 
@@ -450,8 +459,9 @@ def get_comparison_report_data(docname):
         "Supplier Quotation",
         filters={
             "request_for_quotation": rfq,
+            "docstatus": ["!=", 2]  # Exclude cancelled; include draft (0) and submitted (1)
         },
-        fields=["name", "supplier", "modified", "grand_total", "currency"],
+        fields=["name", "supplier", "modified", "total", "currency"],  # "total" is pre-tax, excludes GST
         order_by="modified desc"
     )
 
@@ -462,7 +472,7 @@ def get_comparison_report_data(docname):
     for sq in supplier_quotations:
         if sq.supplier not in processed_suppliers:
             processed_suppliers[sq.supplier] = sq.name
-            supplier_grand_totals[sq.supplier] = sq.grand_total or 0
+            supplier_grand_totals[sq.supplier] = sq.total or 0  # pre-tax total, excludes GST
             supplier_currencies[sq.supplier] = sq.currency or ""
 
     # Resolve currency symbol for each supplier (cached to avoid redundant DB hits)
@@ -505,11 +515,39 @@ def get_comparison_report_data(docname):
 
         last_purchase = get_last_purchase_details(rfq_item.item_code)
 
-        # Strip HTML tags from description
+        # Strip HTML tags from description, preserving structure from Frappe text editor HTML
         description = rfq_item.description or rfq_item.item_name or rfq_item.item_code
         if description:
+            import re
             from frappe.utils import strip_html_tags
+
+            # Convert ordered list items to numbered text before stripping
+            # Frappe text editor saves <ol><li>item</li></ol>
+            ol_counter = [0]
+            def replace_ol_li(m):
+                ol_counter[0] += 1
+                return f'\n{ol_counter[0]}. '
+            # Reset counter per <ol> block
+            def replace_ol(m):
+                ol_counter[0] = 0
+                return m.group(0)
+            description = re.sub(r'<ol[^>]*>', replace_ol, description, flags=re.IGNORECASE)
+            description = re.sub(r'<ol[^>]*>.*?</ol>', lambda m: re.sub(r'<li[^>]*>', replace_ol_li, m.group(0), flags=re.IGNORECASE), description, flags=re.IGNORECASE | re.DOTALL)
+
+            # Convert unordered list items to bullet text
+            description = re.sub(r'<ul[^>]*>.*?</ul>', lambda m: re.sub(r'<li[^>]*>', '\n• ', m.group(0), flags=re.IGNORECASE), description, flags=re.IGNORECASE | re.DOTALL)
+
+            # Replace block-level closing tags with newlines
+            description = re.sub(r'<br\s*/?>', '\n', description, flags=re.IGNORECASE)
+            description = re.sub(r'</p>|</div>|</tr>|</li>', '\n', description, flags=re.IGNORECASE)
+
             description = strip_html_tags(description)
+
+            # Decode common HTML entities
+            description = description.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&#39;', "'").replace('&quot;', '"')
+
+            # Collapse runs of blank lines, trim
+            description = re.sub(r'\n{3,}', '\n\n', description).strip()
 
         items_data[key] = {
             "rfq_item_row": rfq_item.name,
@@ -728,6 +766,36 @@ def get_comparison_report_data(docname):
         "last_purchase_supplier": "",
         "supplier_rates": frappe.as_json(notes_data)
     })
+    # Refresh attached files on every Fetch Report — clear and re-fetch from current SQs
+    sqc.set("attached_files", [])
+    supplier_quotations_for_files = frappe.get_all(
+        "Supplier Quotation",
+        filters={
+            "request_for_quotation": rfq,
+            "docstatus": ["!=", 2]  # Exclude cancelled
+        },
+        fields=["name", "supplier"],
+        distinct=True,
+        order_by="name desc"
+    )
+    for sq in supplier_quotations_for_files:
+        files = frappe.get_all(
+            "File",
+            filters={
+                "attached_to_doctype": "Supplier Quotation",
+                "attached_to_name": sq.name
+            },
+            fields=["name", "file_name", "file_url"]
+        )
+        for f in files:
+            sqc.append("attached_files", {
+                "supplier": sq.supplier,
+                "supplier_quotation": sq.name,
+                "file": f.name,
+                "file_name": f.file_name,
+                "file_url": f.file_url
+            })
+
     sqc.save(ignore_permissions=True)
     frappe.db.commit()
 
@@ -806,6 +874,31 @@ def clear_selection_table_links(docname):
     frappe.db.commit()
 
 
+def format_indian_currency(rate):
+    """Format a number using Indian comma system (lakhs, crores). e.g. 1234567.89 -> '12,34,567.89'"""
+    rate = float(rate)
+    is_negative = rate < 0
+    rate = abs(rate)
+    # Split into integer and decimal parts
+    int_part = int(rate)
+    dec_part = f"{rate:.2f}".split(".")[1]
+    # Indian grouping: last 3 digits, then groups of 2
+    s = str(int_part)
+    if len(s) > 3:
+        last3 = s[-3:]
+        rest = s[:-3]
+        # Group rest in pairs from the right
+        groups = []
+        while len(rest) > 2:
+            groups.append(rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.append(rest)
+        groups.reverse()
+        s = ",".join(groups) + "," + last3
+    return ("-" if is_negative else "") + s + "." + dec_part
+
+
 def get_last_purchase_details(item_code):
     """Get the last purchase rate and supplier for an item from the latest submitted Purchase Order"""
     last_purchase = frappe.db.sql("""
@@ -830,7 +923,7 @@ def get_last_purchase_details(item_code):
         supplier_name = frappe.db.get_value("Supplier", last_purchase[0].supplier, "supplier_name")
         currency_symbol = frappe.db.get_value("Currency", last_purchase[0].currency, "symbol") or ""
         rate = last_purchase[0].rate or 0
-        formatted_rate = f"{currency_symbol}{rate:.2f}" if currency_symbol else f"{rate:.2f}"
+        formatted_rate = f"{currency_symbol}{format_indian_currency(rate)}" if currency_symbol else format_indian_currency(rate)
         return {
             "rate": formatted_rate,
             "supplier": supplier_name or last_purchase[0].supplier
@@ -849,7 +942,7 @@ def add_po_reference(comparison_doc, po, selected_rfq_item_rows):
             row.purchase_order = po.name
 
 
-def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, project, cost_center, required_by_date):
+def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, project, cost_center, po_schedule_date):
     try:
         from erpnext.buying.doctype.supplier_quotation.supplier_quotation import make_purchase_order
 
@@ -952,8 +1045,9 @@ def create_po_from_supplier_quotation(sq_name, selected_items, comparison_doc, p
                 po_item.qty = selected_item["qty"]
                 po_item.rate = selected_item["rate"]
 
-                if required_by_date:
-                    po_item.schedule_date = required_by_date
+                # schedule_date is calculated as today + required_by_in_days at submit time
+                # po_schedule_date is passed in already computed from create_purchase_orders_on_submit
+                po_item.schedule_date = po_schedule_date
 
                 if hasattr(po_item, 'custom_project'):
                     po_item.custom_project = project

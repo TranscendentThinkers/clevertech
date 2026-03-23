@@ -154,6 +154,7 @@
   {
    "fieldname": "required_by_date",
    "fieldtype": "Date",
+   "hidden": 1,
    "label": "Required By Date"
   },
   {
@@ -202,7 +203,7 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-03-16 16:17:01.582795",
+ "modified": "2026-03-18 11:03:14.376375",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
