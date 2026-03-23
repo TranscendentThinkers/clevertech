@@ -48,10 +48,11 @@ def set_payment_schedule(doc):
 
 
 def validate(doc, method):
-    doc.custom_payment_terms_template = frappe.db.get_value("Supplier", doc.supplier, "payment_terms")
-
-    # Populate custom payment schedule based on the fetched template
-    set_payment_schedule(doc)
+    # Only set payment terms and schedule on the very first save.
+    # After that, both fields are freely editable by the user.
+    if doc.is_new():
+        doc.custom_payment_terms_template = frappe.db.get_value("Supplier", doc.supplier, "payment_terms")
+        set_payment_schedule(doc)
 
     # Collect all RFQs linked in SQ Items
     rfq_list = list({d.request_for_quotation for d in doc.items if d.request_for_quotation})
