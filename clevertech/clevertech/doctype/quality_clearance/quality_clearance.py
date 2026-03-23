@@ -235,8 +235,10 @@ class QualityClearance(Document):
         accepted_wh = wh_settings.qc_accepted_warehouse
         rejected_wh = wh_settings.qc_rejected_warehouse
         for row in self.grn_items_quality_reqd:
+            accepted_wh_in_grn = frappe.get_value("Purchase Receipt Item", {"parent": self.grn_name, "item_code": row.item_code}, "warehouse")
+
             if row.accepted_qty>0:
-                accepted_wh_in_grn = frappe.get_value("Purchase Receipt Item", {"parent": self.grn_name, "item_code": row.item_code}, "warehouse")
+                #accepted_wh_in_grn = frappe.get_value("Purchase Receipt Item", {"parent": self.grn_name, "item_code": row.item_code}, "warehouse")
                 row.db_set("accepted_stock_entry", self.create_stock_entry(row.item_code, accepted_wh_in_grn, accepted_wh, row.accepted_qty))
             if row.rejected_qty>0:
                 row.db_set("rejected_stock_entry", self.create_stock_entry(row.item_code, accepted_wh_in_grn, rejected_wh, row.rejected_qty))    
