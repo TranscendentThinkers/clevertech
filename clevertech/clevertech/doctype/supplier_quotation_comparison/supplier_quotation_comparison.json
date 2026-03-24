@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "autoname": "format:SQC-{request_for_quotation}-{####}",
- "creation": "2026-01-12 10:30:24.332080",
+ "creation": "2026-03-24 17:17:27.091858",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
@@ -24,12 +24,16 @@
   "comparison_report",
   "section_break_vnpi",
   "attached_files",
+  "section_break_blas",
+  "quotation_exception_reason",
   "section_break_prve",
   "supplier_selection_table",
   "clear_links",
   "section_break_wqir",
   "grand_total",
   "amended_from",
+  "section_break_hwcl",
+  "supplier_po_summary",
   "more_info_tab",
   "additional_info_section",
   "comparison_table",
@@ -197,13 +201,32 @@
    "hidden": 1,
    "label": "Purchase Order",
    "options": "Purchase Order"
+  },
+  {
+   "fieldname": "section_break_blas",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "quotation_exception_reason",
+   "fieldtype": "Small Text",
+   "label": "Quotation Exception Reason"
+  },
+  {
+   "fieldname": "section_break_hwcl",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "supplier_po_summary",
+   "fieldtype": "Table",
+   "label": "Supplier PO Summary",
+   "options": "Supplier PO Summary"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-03-18 11:03:14.376375",
+ "modified": "2026-03-24 18:01:20.933442",
  "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
