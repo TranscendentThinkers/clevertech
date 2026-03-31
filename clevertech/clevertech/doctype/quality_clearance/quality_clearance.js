@@ -44,6 +44,10 @@ function toggle_fields_based_on_type(frm) {
         frm.set_df_property('grn_name', 'hidden', 1);
         frm.set_df_property('po_no', 'hidden', 1);
     }
+
+    // Make qty_to_inspect read-only in child table when type is GRN Based
+    const is_grn_based = frm.doc.type === 'GRN Based';
+    frm.fields_dict['grn_items_quality_reqd'].grid.toggle_enable('qty_to_inspect', !is_grn_based);
 }
 
 function apply_supplier_filters(frm) {
