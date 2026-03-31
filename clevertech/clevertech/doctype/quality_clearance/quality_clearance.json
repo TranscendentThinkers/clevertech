@@ -52,6 +52,7 @@
    "fieldname": "grn_name",
    "fieldtype": "Link",
    "in_list_view": 1,
+   "in_standard_filter": 1,
    "label": "GRN Name",
    "options": "Purchase Receipt"
   },
@@ -76,6 +77,7 @@
   {
    "fieldname": "po_no",
    "fieldtype": "Link",
+   "in_standard_filter": 1,
    "label": "PO No.",
    "options": "Purchase Order"
   },
@@ -141,6 +143,7 @@
    "fetch_from": "supplier.supplier_name",
    "fieldname": "supplier_name",
    "fieldtype": "Data",
+   "in_standard_filter": 1,
    "label": "Supplier Name",
    "read_only": 1
   }
@@ -149,8 +152,8 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-02-24 13:06:44.123078",
- "modified_by": "Administrator",
+ "modified": "2026-03-31 15:53:02.508006",
+ "modified_by": "supriya@transcendent.co.in",
  "module": "Clevertech",
  "name": "Quality Clearance",
  "naming_rule": "Expression",
