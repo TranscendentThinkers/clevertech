@@ -21,6 +21,8 @@
   "cost_center",
   "section_break_bdka",
   "fetch_report",
+  "show_report",
+  "section_break_aaci",
   "comparison_report",
   "section_break_vnpi",
   "attached_files",
@@ -32,8 +34,6 @@
   "section_break_wqir",
   "grand_total",
   "amended_from",
-  "section_break_hwcl",
-  "supplier_po_summary",
   "more_info_tab",
   "additional_info_section",
   "comparison_table",
@@ -149,7 +149,8 @@
   {
    "fieldname": "required_by_in_days",
    "fieldtype": "Int",
-   "label": "Required By In Days"
+   "label": "Required By In Days",
+   "reqd": 1
   },
   {
    "fieldname": "section_break_gwew",
@@ -181,7 +182,8 @@
    "fieldtype": "Table",
    "label": "Comparison Table",
    "options": "Comparison Table Item",
-   "read_only": 1
+   "read_only": 1,
+   "hidden": 1
   },
   {
    "collapsible": 1,
@@ -212,22 +214,21 @@
    "label": "Quotation Exception Reason"
   },
   {
-   "fieldname": "section_break_hwcl",
-   "fieldtype": "Section Break"
+   "fieldname": "show_report",
+   "fieldtype": "Button",
+   "label": "Show Report"
   },
   {
-   "fieldname": "supplier_po_summary",
-   "fieldtype": "Table",
-   "label": "Supplier PO Summary",
-   "options": "Supplier PO Summary"
+   "fieldname": "section_break_aaci",
+   "fieldtype": "Section Break"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-03-24 18:01:20.933442",
- "modified_by": "Administrator",
+ "modified": "2026-03-30 16:59:23.634329",
+ "modified_by": "rutuja@transcendent.co.in",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
  "naming_rule": "Expression",

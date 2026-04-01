@@ -33,7 +33,9 @@
   "payment_terms_template",
   "notes",
   "column_break_eufe",
-  "delivery_term"
+  "delivery_term",
+  "currency",
+  "base_amount"
  ],
  "fields": [
   {
@@ -115,7 +117,8 @@
   {
    "fieldname": "rate",
    "fieldtype": "Currency",
-   "label": "Rate"
+   "label": "Rate",
+   "options": "currency"
   },
   {
    "allow_on_submit": 1,
@@ -132,7 +135,8 @@
   {
    "fieldname": "amount",
    "fieldtype": "Currency",
-   "label": "Amount"
+   "label": "Amount",
+   "options": "currency"
   },
   {
    "fieldname": "reason",
@@ -190,6 +194,19 @@
    "fieldtype": "Data",
    "hidden": 1,
    "label": "RFQ Item Row"
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Currency",
+   "options": "Currency"
+  },
+  {
+   "fieldname": "base_amount",
+   "fieldtype": "Currency",
+   "hidden": 1,
+   "label": "Base Amount"
   }
  ],
  "grid_page_length": 50,

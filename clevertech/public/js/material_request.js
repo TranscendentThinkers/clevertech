@@ -135,7 +135,8 @@ frappe.ui.form.on('Material Request', {
                         fieldtype: "Link",
                         label: __("For Warehouse"),
                         options: "Warehouse",
-                        reqd: 1,
+                        reqd: 0,
+                        hidden: 1,
                 },
                 { fieldname: "qty", fieldtype: "Float", label: __("Quantity"), reqd: 1, default: 1 },
                 {
@@ -158,21 +159,38 @@ frappe.ui.form.on('Material Request', {
                                 frappe.throw(__("BOM does not contain any stock item"));
                         } else {
                             erpnext.utils.remove_empty_first_row(frm, "items");
-                            $.each(r.message, function (i, item) {
-                                var d = frappe.model.add_child(cur_frm.doc, "Material Request Item", "items");
-                                d.item_code = item.item_code;
-                                d.item_name = item.item_name;
-                                d.description = item.description;
-                                d.warehouse = values.warehouse;
-                                d.uom = item.stock_uom;
-                                d.stock_uom = item.stock_uom;
-                                d.conversion_factor = 1;
-                                d.qty = item.qty;
-                                d.project = frm.doc.custom_project_;
-                                d.bom_no = values.bom;
-                                d.custom_bom_qty = item.qty;
+                            let new_rows = [];
+                            $.each(r.message, function (_i, item) {
+                                var row = frappe.model.add_child(cur_frm.doc, "Material Request Item", "items");
+                                row.item_code = item.item_code;
+                                row.item_name = item.item_name;
+                                row.description = item.description;
+                                row.uom = item.stock_uom;
+                                row.stock_uom = item.stock_uom;
+                                row.conversion_factor = 1;
+                                row.qty = item.qty;
+                                row.project = frm.doc.custom_project_;
+                                row.bom_no = values.bom;
+                                row.custom_bom_qty = item.qty;
+                                new_rows.push(row);
                             });
                             frm.set_value('custom_procurement_bom', values.bom);
+
+                            // Fill warehouses immediately from item defaults
+                            let item_codes = [...new Set(new_rows.map(row => row.item_code).filter(Boolean))];
+                            frappe.call({
+                                method: "clevertech.server_scripts.material_request.get_default_warehouses_for_items",
+                                args: { item_codes: item_codes, company: frm.doc.company },
+                                callback(wh_res) {
+                                    let wh_map = wh_res.message || {};
+                                    new_rows.forEach(row => {
+                                        if (wh_map[row.item_code]) {
+                                            frappe.model.set_value(row.doctype, row.name, "warehouse", wh_map[row.item_code]);
+                                        }
+                                    });
+                                    refresh_field("items");
+                                }
+                            });
                         }
                         d.hide();
                         refresh_field("items");

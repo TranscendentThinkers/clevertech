@@ -1,7 +1,7 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import today, add_days
+from frappe.utils import today, add_days, now_datetime
 
 def get_incoterm_title(code):
     """Fetch the title of an Incoterm given its code/name"""
@@ -13,24 +13,42 @@ def get_incoterm_title(code):
 class SupplierQuotationComparison(Document):
     def validate(self):
         self.validate_request_for_quotations()
+        self.validate_supplier_reason()
 
         # Set created_by on first save (when document is new)
         if self.is_new() and not self.created_by:
             self.created_by = frappe.session.user
 
+        # Log workflow state changes
+        if not self.is_new() and self.has_value_changed("workflow_state"):
+            old_state = self.get_doc_before_save().workflow_state if self.get_doc_before_save() else "?"
+            _append_sqc_log(self.name, f"State changed: {old_state} → {self.workflow_state}")
+
         # Only populate items table on initial creation or when RFQ changes
         # Skip if supplier_selection_table already has data (workflow transition)
         if self.is_new() and self.request_for_quotation and not self.supplier_selection_table:
             self.populate_items_table()
-            # fetch_file_references removed from validate — now called on every Fetch Report instead
-            # self.fetch_file_references()
             self.fetch_rfq_fields()
         elif self.has_value_changed("request_for_quotation") and self.request_for_quotation:
             # Only repopulate if RFQ actually changed (not on workflow transitions)
             self.populate_items_table()
-            # fetch_file_references removed from validate — now called on every Fetch Report instead
-            # self.fetch_file_references()
             self.fetch_rfq_fields()
+
+    def after_insert(self):
+        # Auto-run Fetch Report on creation so comparison_table is always populated
+        if self.request_for_quotation:
+            try:
+                get_comparison_report_data(self.name)
+            except Exception as e:
+                _append_sqc_log(self.name, f"Auto Fetch Report on creation FAILED: {str(e)}")
+
+    def on_update(self):
+        ct_count = len(self.get("comparison_table") or [])
+        _append_sqc_log(
+            self.name,
+            f"Saved — state: {self.workflow_state or 'Draft'}, comparison_table: {ct_count} rows"
+            + (" ← EMPTY" if ct_count == 0 else "")
+        )
 
     def on_submit(self):
         """Auto-submit supplier quotations and create purchase orders on submit"""
@@ -50,6 +68,30 @@ class SupplierQuotationComparison(Document):
         # as today + required_by_in_days, so this field must be filled before submission
         if not self.required_by_in_days or self.required_by_in_days <= 0:
             frappe.throw(_("Required By (Days) is mandatory before submission. Please set the number of days."))
+
+    def validate_supplier_reason(self):
+        """Block save if any row has supplier changed from suggested without a reason."""
+        missing_reason = []
+        for i, row in enumerate(self.supplier_selection_table or [], start=1):
+            if (
+                row.get("suggested_supplier")
+                and row.get("supplier")
+                and row.suggested_supplier.strip() != row.supplier.strip()
+                and not (row.get("reason") or "").strip()
+            ):
+                missing_reason.append(
+                    f"Row {i} ({row.item_code or 'Item'}): "
+                    f"Supplier changed from <b>{row.suggested_supplier}</b> "
+                    f"to <b>{row.supplier}</b> — Reason is mandatory."
+                )
+
+        if missing_reason:
+            frappe.throw(
+                _("Please provide a reason for the following supplier changes:<br><br>{0}").format(
+                    "<br>".join(missing_reason)
+                ),
+                title=_("Reason Required")
+            )
 
     def validate_request_for_quotations(self):
         rfq = self.request_for_quotation
@@ -340,6 +382,7 @@ class SupplierQuotationComparison(Document):
             })
 
 
+
 @frappe.whitelist()
 def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None, rfq_item_row=None):
     """
@@ -356,13 +399,14 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None,
             filters={
                 "request_for_quotation": rfq,
             },
-            fields=["name", "supplier", "modified", "total"],  # pre-tax total for tiebreaking
+            fields=["name", "supplier", "modified", "total", "currency"],
             order_by="modified desc"
         )
 
         for sq in supplier_quotations:
             if sq.supplier == supplier:
                 sq_name = sq.name
+                sq_currency = sq.currency or ""
 
                 if item_code:
                     try:
@@ -393,9 +437,11 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None,
                         if matched_item:
                             return {
                                 "name": sq_name,
+                                "currency": sq_currency,
                                 "rate": matched_item.rate,
                                 "qty": matched_item.qty,
                                 "amount": matched_item.amount,
+                                "base_amount": matched_item.base_amount,
                                 "delivery_term": delivery_term,
                                 "payment_terms_template": payment_terms_template,
                                 "notes": notes
@@ -404,9 +450,11 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None,
                         # Item not found in this quotation
                         return {
                             "name": sq_name,
+                            "currency": sq_currency,
                             "rate": 0,
                             "qty": 0,
                             "amount": 0,
+                            "base_amount": 0,
                             "delivery_term": delivery_term,
                             "payment_terms_template": payment_terms_template,
                             "notes": notes
@@ -415,9 +463,11 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None,
                         frappe.logger().error(f"Error fetching Supplier Quotation {sq_name}: {str(e)}")
                         return {
                             "name": sq_name,
+                            "currency": sq_currency,
                             "rate": 0,
                             "qty": 0,
                             "amount": 0,
+                            "base_amount": 0,
                             "delivery_term": None,
                             "payment_terms_template": None,
                             "notes": ""
@@ -432,16 +482,49 @@ def get_supplier_quotation(rfq, supplier, item_code=None, material_request=None,
         return None
 
 
+def _append_sqc_log(docname, message):
+    """Append a timestamped log entry to comparison_table_log field. Silent — never raises."""
+    try:
+        user = frappe.session.user or "system"
+        entry = f"[{now_datetime().strftime('%Y-%m-%d %H:%M:%S')}] {user} — {message}"
+        current = frappe.db.get_value("Supplier Quotation Comparison", docname, "comparison_table_log") or ""
+        updated = (current + "\n" + entry).strip()
+        frappe.db.set_value("Supplier Quotation Comparison", docname, "comparison_table_log", updated, update_modified=False)
+    except Exception:
+        pass
+
+
 @frappe.whitelist()
-def get_comparison_report_data(docname):
+def log_show_report_event(docname, was_empty):
+    """Called by JS when Show Report is clicked — logs the event for RCA."""
+    status = "EMPTY — live data fetched from server" if frappe.parse_json(was_empty) else "OK — rendered from saved data"
+    _append_sqc_log(docname, f"Show Report clicked — comparison_table: {status}")
+
+
+@frappe.whitelist()
+def get_comparison_data_for_display(docname):
+    """Read-only: builds comparison data from live SQ data and returns it for rendering.
+    Does NOT save anything — zero DB writes, form stays clean."""
+    result = _build_sqc_comparison_data(docname)
+    return {"comparison_rows": result["comparison_rows"], "base_currency_symbol": result["base_currency_symbol"]}
+
+
+def _build_sqc_comparison_data(docname):
+    """Build full comparison data from live SQ data. Returns a dict with everything
+    needed by both get_comparison_report_data (save) and get_comparison_data_for_display (read-only)."""
     sqc = frappe.get_doc("Supplier Quotation Comparison", docname)
     rfq = sqc.request_for_quotation
     if not rfq:
         frappe.throw("Please select Request for Quotation first")
+    return _build_comparison_data_for_rfq(rfq)
 
+
+def _build_comparison_data_for_rfq(rfq):
+    """Core logic: builds comparison rows, selection rows, file rows from live SQ data.
+    All rates and amounts are in base (company) currency using base_rate/base_amount/base_total
+    from the Supplier Quotation, which ERPNext converts correctly at SQ creation time."""
     rfq_doc = frappe.get_doc("Request for Quotation", rfq)
 
-    # Get all suppliers from RFQ
     all_rfq_suppliers = []
     supplier_names = {}
     supplier_grand_totals = {}
@@ -451,48 +534,23 @@ def get_comparison_report_data(docname):
         all_rfq_suppliers.append(supplier_id)
         supplier_doc = frappe.get_doc("Supplier", supplier_id)
         supplier_names[supplier_id] = supplier_doc.supplier_name or supplier_id
-        supplier_grand_totals[supplier_id] = 0  # Initialize to 0
+        supplier_grand_totals[supplier_id] = 0
 
-    # Get all supplier quotations for this RFQ (latest first)
-    # Fetch currency alongside other fields
     supplier_quotations = frappe.get_all(
         "Supplier Quotation",
-        filters={
-            "request_for_quotation": rfq,
-            "docstatus": ["!=", 2]  # Exclude cancelled; include draft (0) and submitted (1)
-        },
-        fields=["name", "supplier", "modified", "total", "currency"],  # "total" is pre-tax, excludes GST
+        filters={"request_for_quotation": rfq, "docstatus": ["!=", 2]},
+        fields=["name", "supplier", "modified", "total", "currency"],
         order_by="modified desc"
     )
 
     processed_suppliers = {}
     supplier_currencies = {}  # supplier_id -> currency code
-
-    # Keep latest quotation per supplier
     for sq in supplier_quotations:
         if sq.supplier not in processed_suppliers:
             processed_suppliers[sq.supplier] = sq.name
-            supplier_grand_totals[sq.supplier] = sq.total or 0  # pre-tax total, excludes GST
+            supplier_grand_totals[sq.supplier] = sq.total or 0
             supplier_currencies[sq.supplier] = sq.currency or ""
 
-    # Resolve currency symbol for each supplier (cached to avoid redundant DB hits)
-    currency_symbol_cache = {}
-
-    def get_currency_symbol(currency_code):
-        if not currency_code:
-            return ""
-        if currency_code in currency_symbol_cache:
-            return currency_symbol_cache[currency_code]
-        symbol = frappe.db.get_value("Currency", currency_code, "symbol") or currency_code
-        currency_symbol_cache[currency_code] = symbol
-        return symbol
-
-    supplier_currency_symbols = {
-        supplier: get_currency_symbol(currency_code)
-        for supplier, currency_code in supplier_currencies.items()
-    }
-
-    # Fetch payment terms, delivery terms per supplier from their quotations
     supplier_payment_terms = {}
     supplier_delivery_terms = {}
     supplier_notes = {}
@@ -504,49 +562,31 @@ def get_comparison_report_data(docname):
         supplier_delivery_terms[supplier] = get_incoterm_title(delivery_term_code) if delivery_term_code else ""
         supplier_notes[supplier] = sq_doc.get("custom_note") or ""
 
-    # Prepare item structure from RFQ
-    # Key by rfq_item.name (row ID) — handles duplicate item codes from same MR
     items_data = {}
-    item_order = []  # preserve insertion order
+    item_order = []
 
     for rfq_item in rfq_doc.items:
         material_request = rfq_item.get("material_request") or ""
-        key = rfq_item.name  # unique row ID
-
+        key = rfq_item.name
         last_purchase = get_last_purchase_details(rfq_item.item_code)
-
-        # Strip HTML tags from description, preserving structure from Frappe text editor HTML
         description = rfq_item.description or rfq_item.item_name or rfq_item.item_code
         if description:
             import re
             from frappe.utils import strip_html_tags
-
-            # Convert ordered list items to numbered text before stripping
-            # Frappe text editor saves <ol><li>item</li></ol>
             ol_counter = [0]
             def replace_ol_li(m):
                 ol_counter[0] += 1
                 return f'\n{ol_counter[0]}. '
-            # Reset counter per <ol> block
             def replace_ol(m):
                 ol_counter[0] = 0
                 return m.group(0)
             description = re.sub(r'<ol[^>]*>', replace_ol, description, flags=re.IGNORECASE)
             description = re.sub(r'<ol[^>]*>.*?</ol>', lambda m: re.sub(r'<li[^>]*>', replace_ol_li, m.group(0), flags=re.IGNORECASE), description, flags=re.IGNORECASE | re.DOTALL)
-
-            # Convert unordered list items to bullet text
-            description = re.sub(r'<ul[^>]*>.*?</ul>', lambda m: re.sub(r'<li[^>]*>', '\n• ', m.group(0), flags=re.IGNORECASE), description, flags=re.IGNORECASE | re.DOTALL)
-
-            # Replace block-level closing tags with newlines
+            description = re.sub(r'<ul[^>]*>.*?</ul>', lambda m: re.sub(r'<li[^>]*>', '\n\u2022 ', m.group(0), flags=re.IGNORECASE), description, flags=re.IGNORECASE | re.DOTALL)
             description = re.sub(r'<br\s*/?>', '\n', description, flags=re.IGNORECASE)
             description = re.sub(r'</p>|</div>|</tr>|</li>', '\n', description, flags=re.IGNORECASE)
-
             description = strip_html_tags(description)
-
-            # Decode common HTML entities
-            description = description.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&#39;', "'").replace('&quot;', '"')
-
-            # Collapse runs of blank lines, trim
+            description = description.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&#39;', "'").replace('&quot;', '"'  )
             description = re.sub(r'\n{3,}', '\n\n', description).strip()
 
         items_data[key] = {
@@ -561,172 +601,97 @@ def get_comparison_report_data(docname):
         }
         item_order.append(key)
 
-    # Track lowest rate supplier per rfq_item_row
     lowest_rate_suppliers = {}
 
-    # Iterate through suppliers that have quotations
     for supplier, sq_name in processed_suppliers.items():
         try:
             sq_doc = frappe.get_doc("Supplier Quotation", sq_name)
         except Exception as e:
             frappe.logger().error(f"Error fetching Supplier Quotation {sq_name}: {str(e)}")
             continue
-
         for item in sq_doc.items:
-            # Match SQ item back to its RFQ item row via request_for_quotation_item
             rfq_row_name = item.get("request_for_quotation_item") or ""
             key = rfq_row_name
-
-            if key in items_data:
-                items_data[key][supplier] = {
-                    "rate": item.rate,
-                    "qty": item.qty,
-                    "amount": item.amount,
-                    # Store the currency symbol alongside so the JS can render it per cell
-                    "currency_symbol": supplier_currency_symbols.get(supplier, "")
-                }
-
-                # Compare by rate; on tie use supplier grand total as tiebreaker
-                if item.rate and item.rate > 0:
-                    if key not in lowest_rate_suppliers:
+            if key not in items_data:
+                continue
+            rate = item.rate or 0          # foreign currency — for display and PO
+            amount = item.amount or 0      # foreign currency — for display and PO
+            base_rate = item.base_rate or 0  # INR — for lowest-rate comparison only
+            items_data[key][supplier] = {
+                "rate": rate,
+                "qty": item.qty,
+                "amount": amount
+            }
+            # Compare by base_rate (INR) so cross-currency comparison is apples-to-apples
+            if base_rate > 0:
+                if key not in lowest_rate_suppliers:
+                    lowest_rate_suppliers[key] = {
+                        "supplier": supplier, "rate": rate, "base_rate": base_rate,
+                        "qty": item.qty, "amount": amount, "supplier_quotation": sq_name
+                    }
+                else:
+                    current = lowest_rate_suppliers[key]
+                    current_gt = supplier_grand_totals.get(current["supplier"], 0) or 0
+                    new_gt = supplier_grand_totals.get(supplier, 0) or 0
+                    if base_rate < current["base_rate"] or (base_rate == current["base_rate"] and new_gt < current_gt):
                         lowest_rate_suppliers[key] = {
-                            "supplier": supplier,
-                            "rate": item.rate,
-                            "qty": item.qty,
-                            "amount": item.amount,
-                            "supplier_quotation": sq_name
+                            "supplier": supplier, "rate": rate, "base_rate": base_rate,
+                            "qty": item.qty, "amount": amount, "supplier_quotation": sq_name
                         }
-                    else:
-                        current = lowest_rate_suppliers[key]
-                        current_grand_total = supplier_grand_totals.get(current["supplier"], 0) or 0
-                        new_grand_total = supplier_grand_totals.get(supplier, 0) or 0
-                        if item.rate < current["rate"]:
-                            lowest_rate_suppliers[key] = {
-                                "supplier": supplier,
-                                "rate": item.rate,
-                                "qty": item.qty,
-                                "amount": item.amount,
-                                "supplier_quotation": sq_name
-                            }
-                        elif item.rate == current["rate"] and new_grand_total < current_grand_total:
-                            lowest_rate_suppliers[key] = {
-                                "supplier": supplier,
-                                "rate": item.rate,
-                                "qty": item.qty,
-                                "amount": item.amount,
-                                "supplier_quotation": sq_name
-                            }
 
-    # Populate supplier selection table
-    sqc.set("supplier_selection_table", [])
-
-    grand_total = 0
-
-    for rfq_row_name, lowest_info in lowest_rate_suppliers.items():
-        item_info = items_data[rfq_row_name]
-
-        # Fetch delivery_term, payment_terms, and notes from supplier quotation
-        sq_delivery_term, sq_payment_terms, sq_notes = frappe.db.get_value(
-            "Supplier Quotation",
-            lowest_info["supplier_quotation"],
-            ["custom_delivery_terms", "custom_payment_terms_template", "custom_note"]
-        )
-
-        sqc.append("supplier_selection_table", {
-            "item_code": item_info["item_code"],
-            "material_request": item_info["material_request"],
-            "rfq_item_row": rfq_row_name,
-            "suggested_supplier": lowest_info["supplier"],
-            "supplier": lowest_info["supplier"],
-            "supplier_quotation": lowest_info["supplier_quotation"],
-            "rate": lowest_info["rate"],
-            "qty": lowest_info["qty"],
-            "amount": lowest_info["amount"],
-            "payment_terms_template": sq_payment_terms,
-            "delivery_term": sq_delivery_term,
-            "notes": sq_notes or "",
-            "manually_changed": 0
-        })
-
-        grand_total += lowest_info["amount"]
-
-    # Set the grand total
-    sqc.grand_total = grand_total
-
-    # STORE COMPARISON TABLE DATA IN CHILD TABLE
-    sqc.set("comparison_table", [])
-
-    # Use all suppliers from RFQ (sorted)
     suppliers = sorted(all_rfq_suppliers)
 
+    # Build comparison_rows
+    comparison_rows = []
     for key in item_order:
         item_info = items_data[key]
-        item_code = item_info["item_code"]
-        material_request = item_info["material_request"]
-
         row_data = {
             "rfq_item_row": key,
-            "item_code": item_code,
-            "material_request": material_request,
+            "item_code": item_info["item_code"],
+            "material_request": item_info["material_request"],
             "description": item_info.get("description", ""),
             "qty": item_info.get("qty", 0),
             "uom": item_info.get("uom", ""),
             "last_purchase_rate": item_info.get("last_purchase_rate", 0),
             "last_purchase_supplier": item_info.get("last_purchase_supplier", "")
         }
-
-        # Each supplier entry is now {"rate": value, "currency_symbol": "₹"}
-        # so the JS can render symbol + rate together in each cell
         supplier_rates = {}
         for supplier in suppliers:
             supplier_data = item_info.get(supplier, {})
             display_name = supplier_names[supplier]
+            currency_code = supplier_currencies.get(supplier, "")
+            currency_symbol = frappe.db.get_value("Currency", currency_code, "symbol") or currency_code
             if supplier_data:
                 rate_val = supplier_data.get("rate", None)
-                sym = supplier_data.get("currency_symbol", "")
-                if rate_val is None or rate_val == 0:
-                    supplier_rates[display_name] = {"rate": "N/A", "currency_symbol": sym}
-                else:
-                    supplier_rates[display_name] = {"rate": rate_val, "currency_symbol": sym}
+                supplier_rates[display_name] = {"rate": "N/A", "currency_symbol": currency_symbol} if (rate_val is None or rate_val == 0) else {"rate": rate_val, "currency_symbol": currency_symbol}
             else:
-                supplier_rates[display_name] = {"rate": "N/A", "currency_symbol": ""}
-
-        # Embed the lowest supplier name directly in supplier_rates JSON
+                supplier_rates[display_name] = {"rate": "N/A", "currency_symbol": currency_symbol}
         if key in lowest_rate_suppliers:
-            lowest_supplier = lowest_rate_suppliers[key]["supplier"]
-            lowest_display_name = supplier_names.get(lowest_supplier, lowest_supplier)
+            lowest_display_name = supplier_names.get(lowest_rate_suppliers[key]["supplier"], lowest_rate_suppliers[key]["supplier"])
             supplier_rates["__lowest__"] = lowest_display_name
             row_data["lowest_rate_supplier"] = lowest_display_name
-
         row_data["supplier_rates"] = frappe.as_json(supplier_rates)
+        comparison_rows.append(row_data)
 
-        sqc.append("comparison_table", row_data)
-
-    # Add total row — grand totals also carry the currency symbol
+    # Total row — foreign currency totals with per-supplier currency symbol
     total_supplier_grand_totals = {}
     for supplier in suppliers:
-        total_value = supplier_grand_totals.get(supplier, 0)
         display_name = supplier_names[supplier]
-        sym = supplier_currency_symbols.get(supplier, "")
         if supplier not in processed_suppliers:
             total_supplier_grand_totals[display_name] = {"value": "No Quotation", "currency_symbol": ""}
         else:
-            total_supplier_grand_totals[display_name] = {"value": total_value, "currency_symbol": sym}
+            currency_code = supplier_currencies.get(supplier, "")
+            currency_symbol = frappe.db.get_value("Currency", currency_code, "symbol") or currency_code
+            total_supplier_grand_totals[display_name] = {"value": supplier_grand_totals.get(supplier, 0), "currency_symbol": currency_symbol}
 
-    total_row = {
-        "item_code": "TOTAL",
-        "material_request": "",
-        "description": "",
-        "qty": 0,
-        "uom": "",
-        "last_purchase_rate": 0,
-        "last_purchase_supplier": "",
+    comparison_rows.append({
+        "item_code": "TOTAL", "material_request": "", "description": "",
+        "qty": 0, "uom": "", "last_purchase_rate": 0, "last_purchase_supplier": "",
         "supplier_grand_totals": frappe.as_json(total_supplier_grand_totals),
         "supplier_rates": ""
-    }
-    sqc.append("comparison_table", total_row)
+    })
 
-    # Add payment terms, delivery terms, and notes rows
+    # Extra info rows
     payment_terms_data = {}
     delivery_terms_data = {}
     notes_data = {}
@@ -736,125 +701,118 @@ def get_comparison_report_data(docname):
         delivery_terms_data[name] = supplier_delivery_terms.get(supplier, "") if supplier in processed_suppliers else "No Quotation"
         notes_data[name] = supplier_notes.get(supplier, "") if supplier in processed_suppliers else "No Quotation"
 
-    sqc.append("comparison_table", {
-        "item_code": "PAYMENT_TERMS",
-        "material_request": "",
-        "description": "",
-        "qty": 0,
-        "uom": "",
-        "last_purchase_rate": 0,
-        "last_purchase_supplier": "",
-        "supplier_rates": frappe.as_json(payment_terms_data)
-    })
-    sqc.append("comparison_table", {
-        "item_code": "DELIVERY_TERMS",
-        "material_request": "",
-        "description": "",
-        "qty": 0,
-        "uom": "",
-        "last_purchase_rate": 0,
-        "last_purchase_supplier": "",
-        "supplier_rates": frappe.as_json(delivery_terms_data)
-    })
-    sqc.append("comparison_table", {
-        "item_code": "NOTES",
-        "material_request": "",
-        "description": "",
-        "qty": 0,
-        "uom": "",
-        "last_purchase_rate": 0,
-        "last_purchase_supplier": "",
-        "supplier_rates": frappe.as_json(notes_data)
-    })
-    # Refresh attached files on every Fetch Report — clear and re-fetch from current SQs
-    sqc.set("attached_files", [])
-    supplier_quotations_for_files = frappe.get_all(
+    for label, data in [("PAYMENT_TERMS", payment_terms_data), ("DELIVERY_TERMS", delivery_terms_data), ("NOTES", notes_data)]:
+        comparison_rows.append({
+            "item_code": label, "material_request": "", "description": "",
+            "qty": 0, "uom": "", "last_purchase_rate": 0, "last_purchase_supplier": "",
+            "supplier_rates": frappe.as_json(data)
+        })
+
+    # Selection rows (foreign currency — matches SQ currency)
+    selection_rows = []
+    grand_total = 0
+    for rfq_row_name, lowest_info in lowest_rate_suppliers.items():
+        item_info = items_data[rfq_row_name]
+        sq_delivery_term, sq_payment_terms, sq_notes = frappe.db.get_value(
+            "Supplier Quotation", lowest_info["supplier_quotation"],
+            ["custom_delivery_terms", "custom_payment_terms_template", "custom_note"]
+        )
+        supplier_currency = supplier_currencies.get(lowest_info["supplier"], "")
+        selection_rows.append({
+            "item_code": item_info["item_code"],
+            "material_request": item_info["material_request"],
+            "rfq_item_row": rfq_row_name,
+            "suggested_supplier": lowest_info["supplier"],
+            "supplier": lowest_info["supplier"],
+            "supplier_quotation": lowest_info["supplier_quotation"],
+            "currency": supplier_currency,
+            "rate": lowest_info["rate"],
+            "qty": lowest_info["qty"],
+            "amount": lowest_info["amount"],
+            "base_amount": lowest_info["qty"] * lowest_info["base_rate"],
+            "payment_terms_template": sq_payment_terms,
+            "delivery_term": sq_delivery_term,
+            "notes": sq_notes or "",
+            "manually_changed": 0
+        })
+        grand_total += lowest_info["qty"] * lowest_info["base_rate"]
+
+    # Attached files
+    attached_files_rows = []
+    sqs_for_files = frappe.get_all(
         "Supplier Quotation",
-        filters={
-            "request_for_quotation": rfq,
-            "docstatus": ["!=", 2]  # Exclude cancelled
-        },
-        fields=["name", "supplier"],
-        distinct=True,
-        order_by="name desc"
+        filters={"request_for_quotation": rfq, "docstatus": ["!=", 2]},
+        fields=["name", "supplier"], distinct=True, order_by="name desc"
     )
-    for sq in supplier_quotations_for_files:
-        files = frappe.get_all(
-            "File",
-            filters={
-                "attached_to_doctype": "Supplier Quotation",
-                "attached_to_name": sq.name
-            },
+    for sq in sqs_for_files:
+        files = frappe.get_all("File",
+            filters={"attached_to_doctype": "Supplier Quotation", "attached_to_name": sq.name},
             fields=["name", "file_name", "file_url"]
         )
         for f in files:
-            sqc.append("attached_files", {
-                "supplier": sq.supplier,
-                "supplier_quotation": sq.name,
-                "file": f.name,
-                "file_name": f.file_name,
-                "file_url": f.file_url
+            attached_files_rows.append({
+                "supplier": sq.supplier, "supplier_quotation": sq.name,
+                "file": f.name, "file_name": f.file_name, "file_url": f.file_url
             })
+
+    base_currency = frappe.db.get_single_value("Global Defaults", "default_currency") or "INR"
+    base_currency_symbol = frappe.db.get_value("Currency", base_currency, "symbol") or "₹"
+
+    # Embed symbol in TOTAL row supplier_rates so it's available when rendering from saved comparison_table
+    for row in comparison_rows:
+        if row.get("item_code") == "TOTAL":
+            existing = frappe.parse_json(row.get("supplier_rates") or "{}")
+            existing["__currency_symbol__"] = base_currency_symbol
+            row["supplier_rates"] = frappe.as_json(existing)
+            break
+
+    return {
+        "comparison_rows": comparison_rows,
+        "selection_rows": selection_rows,
+        "grand_total": grand_total,
+        "attached_files_rows": attached_files_rows,
+        "base_currency_symbol": base_currency_symbol,
+    }
+
+
+@frappe.whitelist()
+def get_comparison_report_data(docname, skip_selection_table=False):
+    """Fetch Report: builds comparison data, saves to DB, logs the event."""
+    sqc = frappe.get_doc("Supplier Quotation Comparison", docname)
+    if not sqc.request_for_quotation:
+        frappe.throw("Please select Request for Quotation first")
+
+    built = _build_comparison_data_for_rfq(sqc.request_for_quotation)
+
+    # Save comparison_table
+    sqc.set("comparison_table", [])
+    for row in built["comparison_rows"]:
+        sqc.append("comparison_table", row)
+
+    # Save supplier_selection_table (unless skipped)
+    if not skip_selection_table:
+        sqc.set("supplier_selection_table", [])
+        for row in built["selection_rows"]:
+            sqc.append("supplier_selection_table", row)
+        sqc.grand_total = built["grand_total"]
+
+    # Refresh attached files
+    sqc.set("attached_files", [])
+    for row in built["attached_files_rows"]:
+        sqc.append("attached_files", row)
 
     sqc.save(ignore_permissions=True)
     frappe.db.commit()
 
-    # Build report columns
-    columns = ["Item Code", "Material Request", "Description", "Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"]
-    for supplier in suppliers:
-        columns.append(f"{supplier_names[supplier]} - Rate")
+    ct_count = len(built["comparison_rows"])
+    sel_count = len(built["selection_rows"])
+    _append_sqc_log(
+        docname,
+        f"Fetch Report run — comparison_table: {ct_count} rows, selection_table: {sel_count} rows"
+        + (" (selection_table skipped)" if skip_selection_table else "")
+    )
 
-    # Build report rows
-    data = []
-    for key in item_order:
-        item_info = items_data[key]
-        item_code = item_info["item_code"]
-        material_request = item_info["material_request"]
-
-        row = {
-            "Item Code": item_code,
-            "Material Request": material_request,
-            "Description": item_info.get("description", ""),
-            "Qty": item_info.get("qty", ""),
-            "UOM": item_info.get("uom", ""),
-            "Last Purchase Rate": item_info.get("last_purchase_rate", ""),
-            "Last Purchase Supplier": item_info.get("last_purchase_supplier", "")
-        }
-
-        for supplier in suppliers:
-            supplier_data = item_info.get(supplier, {})
-            if supplier_data:
-                rate_val = supplier_data.get("rate", None)
-                row[f"{supplier_names[supplier]} - Rate"] = "N/A" if (rate_val is None or rate_val == 0) else rate_val
-            else:
-                row[f"{supplier_names[supplier]} - Rate"] = "N/A"
-
-        data.append(row)
-
-    # Add total row to report data
-    total_row_data = {
-        "Item Code": "TOTAL",
-        "Material Request": "",
-        "Description": "",
-        "Qty": "",
-        "UOM": "",
-        "Last Purchase Rate": "",
-        "Last Purchase Supplier": ""
-    }
-    for supplier in suppliers:
-        total_value = supplier_grand_totals.get(supplier, 0)
-        if supplier not in processed_suppliers:
-            total_row_data[f"{supplier_names[supplier]} - Rate"] = "No Quotation"
-        else:
-            total_row_data[f"{supplier_names[supplier]} - Rate"] = total_value
-    data.append(total_row_data)
-
-    return {
-        "columns": columns,
-        "data": data,
-        "lowest_rate_suppliers": lowest_rate_suppliers,
-        "supplier_id_to_name": supplier_names
-    }
+    return {"status": "ok", "comparison_rows": built["comparison_rows"]}
 
 
 @frappe.whitelist()
