@@ -161,49 +161,51 @@ def validate(doc,method):
         )
 
 @frappe.whitelist()
-def set_default_warehouses_from_item_defaults(doc, method=None):
+def get_default_warehouses_for_items(item_codes, company):
     """
-    For each item row in Material Request, fetch the item's
-    default_warehouse from the Item Defaults child table and
-    set it in the warehouse field of the child row.
-
-    Priority:
-      1. Match by doc.company first
-      2. Fall back to first available default_warehouse
+    Returns a dict of {item_code: default_warehouse} for the given item codes.
+    Priority: company-matched default first, then first available default.
     """
-    if not doc.items:
-        return
+    import json
+    if isinstance(item_codes, str):
+        item_codes = json.loads(item_codes)
 
-    for row in doc.items:
-        if not row.item_code:
-            continue
-
-        # Fetch item_defaults child table for this item
+    result = {}
+    for item_code in item_codes:
         item_defaults = frappe.get_all(
-            "Item Default",                     # Child DocType name
-            filters={"parent": row.item_code},  # Filter by item_code
+            "Item Default",
+            filters={"parent": item_code},
             fields=["company", "default_warehouse"]
         )
-
         if not item_defaults:
             continue
 
         default_warehouse = None
-
-        # Priority 1: Match by company on the Material Request
-        if doc.company:
+        if company:
             for d in item_defaults:
-                if d.company == doc.company and d.default_warehouse:
+                if d.company == company and d.default_warehouse:
                     default_warehouse = d.default_warehouse
                     break
-
-        # Priority 2: First available default_warehouse across any company
         if not default_warehouse:
             for d in item_defaults:
                 if d.default_warehouse:
                     default_warehouse = d.default_warehouse
                     break
 
-        # Apply the warehouse to the row only if not already set by the user
-        if default_warehouse and not row.warehouse:
-            row.warehouse = default_warehouse
+        if default_warehouse:
+            result[item_code] = default_warehouse
+
+    return result
+
+
+def set_default_warehouses_from_item_defaults(doc, method=None):
+    """Before-save doc event: fills warehouse on rows that don't have one yet."""
+    if not doc.items:
+        return
+    item_codes = [row.item_code for row in doc.items if row.item_code and not row.warehouse]
+    if not item_codes:
+        return
+    wh_map = get_default_warehouses_for_items(item_codes, doc.company)
+    for row in doc.items:
+        if not row.warehouse and wh_map.get(row.item_code):
+            row.warehouse = wh_map[row.item_code]

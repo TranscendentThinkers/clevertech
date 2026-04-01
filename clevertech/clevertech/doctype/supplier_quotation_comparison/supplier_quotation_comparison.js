@@ -7,23 +7,29 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
         }
         last_docname = frm.doc.name;
 
-        // Hide comparison_table visually — must NOT be hidden at doctype level
-        frm.toggle_display('comparison_table', false);
-
         calculate_grand_total(frm);
         set_supplier_filter(frm);
 
         if (frm.doc.__islocal) return;
 
-        // Show clear_links button only after submit
-        //if (frm.doc.docstatus === 1) {
-        //    frm.toggle_display('clear_links', true);
-        //} else {
-        //    frm.toggle_display('clear_links', false);
-        //}
+        // Button visibility based on workflow state:
+        // Draft → show Fetch Report button (generates fresh data, overwrites tables)
+        // All other states → show Show Report button (re-renders HTML from saved data only, no overwrites)
+        const workflow_state = frm.doc.workflow_state || "";
+        const is_draft_state = workflow_state === "Draft";
+
+        frm.toggle_display('fetch_report', is_draft_state);
+        frm.toggle_display('show_report', !is_draft_state);
+
+        // Lock selection table after Draft — only editable in Draft state
+        frm.set_df_property('supplier_selection_table', 'read_only', is_draft_state ? 0 : 1);
+        frm.refresh_field('supplier_selection_table');
 
         if (frm.doc.comparison_table && frm.doc.comparison_table.length > 0) {
-            render_comparison_from_table(frm);
+            render_comparison_from_rows(frm.doc.comparison_table, frm.fields_dict.comparison_report.$wrapper);
+        } else if (!is_draft_state) {
+            // comparison_table empty in non-Draft — fetch live (read-only) and render
+            fetch_and_render_comparison(frm);
         }
     },
 
@@ -47,18 +53,33 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
 
     fetch_report: function(frm) {
         if (!frm.doc.request_for_quotation) {
-            frappe.msgprint("Please select Request for Quotation first");
+            frappe.msgprint(__("Please select Request for Quotation first"));
             return;
         }
-        if (frm.is_dirty()) {
-            frm.save().then(() => {
+        const has_existing_data = frm.doc.comparison_table && frm.doc.comparison_table.length > 0;
+        const do_fetch = () => {
+            if (frm.is_dirty()) {
+                frm.save().then(() => generate_comparison_report(frm)).catch(() => {
+                    frm.fields_dict.comparison_report.$wrapper.html("<p>Save failed before fetch. Please save manually and try again.</p>");
+                });
+            } else {
                 generate_comparison_report(frm);
-            }).catch((error) => {
-                console.log("Validation failed, not generating report");
-            });
+            }
+        };
+        if (has_existing_data) {
+            frappe.confirm(
+                __('Re-fetching the report will reset supplier selections to system suggestions. Any manual changes will be lost. Continue?'),
+                do_fetch
+            );
         } else {
-            generate_comparison_report(frm);
+            do_fetch();
         }
+    },
+
+    show_report: function(frm) {
+        // Always fetches live data from server (read-only) and renders HTML.
+        // Zero DB writes — form stays clean.
+        fetch_and_render_comparison(frm);
     },
 
     validate: function(frm) {
@@ -91,6 +112,8 @@ frappe.ui.form.on("Supplier Quotation Comparison", {
 });
 
 function validate_supplier_reason(frm) {
+    // Only enforce reason validation when submitting — not on Draft saves
+    if (frm.doc.docstatus === 0) return;
     if (!frm.doc.supplier_selection_table) {
         return;
     }
@@ -231,9 +254,11 @@ function fetch_supplier_data(frm, cdt, cdn) {
             callback: function(r) {
                 if (r.message) {
                     frappe.model.set_value(cdt, cdn, "supplier_quotation", r.message.name);
+                    frappe.model.set_value(cdt, cdn, "currency", r.message.currency || "");
                     frappe.model.set_value(cdt, cdn, "rate", r.message.rate || 0);
                     frappe.model.set_value(cdt, cdn, "qty", r.message.qty || 0);
                     frappe.model.set_value(cdt, cdn, "amount", r.message.amount || 0);
+                    frappe.model.set_value(cdt, cdn, "base_amount", r.message.base_amount || 0);
                     frappe.model.set_value(cdt, cdn, "total_tax", r.message.total_tax || 0);
                     frappe.model.set_value(cdt, cdn, "delivery_term", r.message.delivery_term || "");
                     frappe.model.set_value(cdt, cdn, "payment_terms_template", r.message.payment_terms_template || "");
@@ -264,18 +289,18 @@ function calculate_amount(frm, cdt, cdn) {
 }
 
 function calculate_grand_total(frm) {
-    if (!frm.doc.supplier_selection_table) {
-        frm.set_value('grand_total', 0);
-        return;
-    }
-
     let grand_total = 0;
 
-    frm.doc.supplier_selection_table.forEach(function(row) {
-        grand_total += (row.amount || 0);
-    });
+    if (frm.doc.supplier_selection_table) {
+        frm.doc.supplier_selection_table.forEach(function(row) {
+            // Use base_amount (INR) so mixed-currency rows sum correctly
+            grand_total += (row.base_amount || row.amount || 0);
+        });
+    }
 
-    frm.set_value('grand_total', grand_total);
+    if (frm.doc.grand_total !== grand_total) {
+        frm.set_value('grand_total', grand_total);
+    }
 }
 
 function clear_supplier_data(cdt, cdn) {
@@ -286,44 +311,69 @@ function clear_supplier_data(cdt, cdn) {
     frappe.model.set_value(cdt, cdn, "total_tax", 0);
 }
 
-// Format a number using Indian comma system (lakhs, crores)
-// e.g. 1234567.89 -> "12,34,567.89"
-function format_indian_currency(num) {
-    if (num === null || num === undefined || isNaN(Number(num))) return "N/A";
-    let n = Number(num);
-    let isNegative = n < 0;
-    n = Math.abs(n);
-    let [intPart, decPart] = n.toFixed(2).split(".");
-    // Indian grouping: last 3 digits, then groups of 2
-    if (intPart.length > 3) {
-        let last3 = intPart.slice(-3);
-        let rest = intPart.slice(0, -3);
-        rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ",");
-        intPart = rest + "," + last3;
-    }
-    return (isNegative ? "-" : "") + intPart + "." + decPart;
+function fetch_and_render_comparison(frm) {
+    const was_empty = !frm.doc.comparison_table || frm.doc.comparison_table.length === 0;
+    const $wrapper = frm.fields_dict.comparison_report.$wrapper;
+    $wrapper.html("<p>Loading comparison report...</p>");
+
+    frappe.call({
+        method: "clevertech.clevertech.doctype.supplier_quotation_comparison.supplier_quotation_comparison.get_comparison_data_for_display",
+        args: { docname: frm.doc.name },
+        callback: function(r) {
+            if (r.message && r.message.comparison_rows) {
+                render_comparison_from_rows(r.message.comparison_rows, $wrapper);
+                if (was_empty) {
+                    frappe.show_alert({ message: __('Comparison table was empty — report loaded live from supplier quotes'), indicator: 'orange' }, 5);
+                }
+            } else {
+                $wrapper.html("<p>No comparison data available. Please click 'Fetch Report' first.</p>");
+            }
+            // Log the event silently (fire and forget)
+            frappe.call({
+                method: "clevertech.clevertech.doctype.supplier_quotation_comparison.supplier_quotation_comparison.log_show_report_event",
+                args: { docname: frm.doc.name, was_empty: was_empty ? 1 : 0 }
+            });
+        },
+        error: function() {
+            $wrapper.html("<p>Error loading comparison report. Please try again.</p>");
+        }
+    });
 }
 
 function render_comparison_from_table(frm) {
     const $wrapper = frm.fields_dict.comparison_report.$wrapper;
+    const rows = frm.doc.comparison_table;
 
-    if (!frm.doc.comparison_table || frm.doc.comparison_table.length === 0) {
+    if (!rows || rows.length === 0) {
         $wrapper.html("<p>No comparison data available. Click 'Fetch Report' to generate.</p>");
         return;
     }
+    render_comparison_from_rows(rows, $wrapper);
+}
+
+function render_comparison_from_rows(rows, $wrapper_arg) {
+    // Accepts rows in comparison_table child row format and renders the HTML report.
+    // $wrapper_arg: a jQuery wrapper to render into (required).
+
+    // Extract base currency symbol stored in TOTAL row
+    let currencySym = "₹";
+    const totalRow = rows.find(r => r.item_code === "TOTAL");
+    if (totalRow && totalRow.supplier_rates) {
+        try {
+            const sr = JSON.parse(totalRow.supplier_rates);
+            if (sr.__currency_symbol__) currencySym = sr.__currency_symbol__;
+        } catch(e) {}
+    }
 
     let columns = ["Item Code", "Material Request", "Description", "Qty", "UOM", "Last Purchase Rate", "Last Purchase Supplier"];
-    let supplierColumns = [];
 
-    let firstDataRow = frm.doc.comparison_table.find(r => r.item_code !== "TOTAL");
+    let firstDataRow = rows.find(r => r.item_code !== "TOTAL");
     if (firstDataRow && firstDataRow.supplier_rates) {
         try {
             let supplierRates = JSON.parse(firstDataRow.supplier_rates);
             Object.keys(supplierRates).forEach(supplierName => {
                 if (supplierName.startsWith("__")) return;
-                let col = `${supplierName.trim()} - Rate`;
-                columns.push(col);
-                supplierColumns.push({ name: supplierName.trim(), col: col });
+                columns.push(`${supplierName.trim()} - Rate`);
             });
         } catch (e) {
             console.error("Error parsing supplier rates:", e);
@@ -332,7 +382,7 @@ function render_comparison_from_table(frm) {
 
     let data = [];
 
-    frm.doc.comparison_table.forEach(row => {
+    rows.forEach(row => {
         let dataRow = {
             "Item Code": row.item_code || "",
             "Material Request": row.material_request || "",
@@ -349,7 +399,6 @@ function render_comparison_from_table(frm) {
             try {
                 let grandTotals = JSON.parse(row.supplier_grand_totals);
                 Object.keys(grandTotals).forEach(supplierName => {
-                    // grandTotals entries are now {value, currency_symbol} objects
                     const entry = grandTotals[supplierName];
                     if (entry && typeof entry === "object") {
                         const sym = entry.currency_symbol || "";
@@ -357,10 +406,9 @@ function render_comparison_from_table(frm) {
                         if (val === "No Quotation") {
                             dataRow[`${supplierName.trim()} - Rate`] = "No Quotation";
                         } else {
-                            dataRow[`${supplierName.trim()} - Rate`] = sym ? `${sym}${format_indian_currency(val)}` : format_indian_currency(val);
+                            dataRow[`${supplierName.trim()} - Rate`] = `${sym || currencySym}${format_indian_currency(val)}`;
                         }
                     } else {
-                        // Fallback for old data without currency_symbol
                         dataRow[`${supplierName.trim()} - Rate`] = entry;
                     }
                 });
@@ -372,43 +420,33 @@ function render_comparison_from_table(frm) {
                 let supplierRates = JSON.parse(row.supplier_rates);
                 let itemNaSuppliers = [];
 
+                const isTextRow = ["PAYMENT_TERMS", "DELIVERY_TERMS", "NOTES"].includes(row.item_code);
+
                 Object.keys(supplierRates).forEach(supplierName => {
                     if (supplierName.startsWith("__")) return;
 
                     const entry = supplierRates[supplierName];
-                    let rateVal, displayVal;
 
-                    if (entry && typeof entry === "object") {
-                        // New format: {rate, currency_symbol}
-                        rateVal = entry.rate;
-                        const sym = entry.currency_symbol || "";
-                        if (rateVal === "N/A" || rateVal === null || rateVal === undefined || rateVal === 0 || rateVal === "0") {
-                            displayVal = "N/A";
-                        } else {
-                            displayVal = sym ? `${sym}${format_indian_currency(rateVal)}` : format_indian_currency(rateVal);
-                        }
-                    } else {
-                        // Fallback for old data stored as plain value
-                        rateVal = entry;
-                        displayVal = (rateVal === "N/A" || rateVal === null || rateVal === undefined || rateVal === 0 || rateVal === "0")
-                            ? "N/A"
-                            : rateVal;
+                    if (isTextRow) {
+                        // Plain string value — display as-is, no currency formatting
+                        dataRow[`${supplierName.trim()} - Rate`] = entry || "";
+                        return;
                     }
+
+                    const rateVal = (entry && typeof entry === "object") ? entry.rate : entry;
+                    const sym = (entry && typeof entry === "object" && entry.currency_symbol) ? entry.currency_symbol : currencySym;
+                    const isNA = rateVal === "N/A" || rateVal === null || rateVal === undefined || rateVal === 0 || rateVal === "0";
+                    const displayVal = isNA ? "N/A" : `${sym}${format_indian_currency(rateVal)}`;
 
                     dataRow[`${supplierName.trim()} - Rate`] = displayVal;
-
-                    if (displayVal === "N/A") {
-                        itemNaSuppliers.push(supplierName.trim());
-                    }
+                    if (isNA) itemNaSuppliers.push(supplierName.trim());
                 });
 
-                // Determine lowest supplier for green highlight
-                // Read from Python-embedded __lowest__ key (display name already resolved)
+                // __lowest__ is always set by server
                 const lowestFromPython = supplierRates["__lowest__"];
                 if (lowestFromPython) {
                     dataRow["__lowest_supplier__"] = lowestFromPython.trim();
                 } else {
-                    // Fallback: find lowest by numeric rate value
                     let lowestName = null, lowestRate = Infinity;
                     Object.keys(supplierRates).forEach(supplierName => {
                         if (supplierName.startsWith("__")) return;
@@ -432,7 +470,7 @@ function render_comparison_from_table(frm) {
     });
 
     const html = build_html_table(columns, data);
-    $wrapper.html(html);
+    $wrapper_arg.html(html);
 }
 
 function generate_comparison_report(frm) {
@@ -454,10 +492,8 @@ function generate_comparison_report(frm) {
                 $wrapper.html("<p>No data available</p>");
                 return;
             }
-
             // Reload doc so frm.doc.comparison_table is fresh from DB
             frm.reload_doc();
-
             frappe.show_alert({
                 message: __('Comparison report generated and saved successfully'),
                 indicator: 'green'
@@ -472,6 +508,23 @@ function generate_comparison_report(frm) {
             });
         }
     });
+}
+
+// Format a number using Indian comma system (lakhs, crores)
+// e.g. 1234567.89 -> "12,34,567.89"
+function format_indian_currency(num) {
+    if (num === null || num === undefined || isNaN(Number(num))) return "N/A";
+    let n = Number(num);
+    let isNegative = n < 0;
+    n = Math.abs(n);
+    let [intPart, decPart] = n.toFixed(2).split(".");
+    if (intPart.length > 3) {
+        let last3 = intPart.slice(-3);
+        let rest = intPart.slice(0, -3);
+        rest = rest.replace(/\B(?=(\d{2})+(?!\d))/g, ",");
+        intPart = rest + "," + last3;
+    }
+    return (isNegative ? "-" : "") + intPart + "." + decPart;
 }
 
 const SPECIAL_ROW_LABELS = {
@@ -606,8 +659,6 @@ function build_html_table(columns, data) {
         columns.forEach((col, idx) => {
             let val = row[col] ?? "";
 
-            // Only auto-format numbers for non-rate columns (rate cells are already
-            // formatted as "₹1500.00" strings by render_comparison_from_table)
             if (typeof val === 'number') {
                 val = val.toFixed(2);
             }
@@ -631,7 +682,6 @@ function build_html_table(columns, data) {
                 const supplierName = col.replace(' - Rate', '').trim();
                 const strVal = String(val).trim();
 
-                // N/A detection: pure "N/A", empty, or a bare zero (not a formatted symbol+number)
                 const isNA = strVal === "N/A" || strVal === "" || strVal === "0" || strVal === "0.00";
                 const isLowest = !isNA &&
                     row["__lowest_supplier__"] &&

@@ -213,6 +213,11 @@ class QualityClearance(Document):
         if self.po_no and not self.grn_name:
             if self.is_new() or self.has_value_changed('po_no'):
                 self.get_items_from_po()
+
+        if self.grn_name:
+            existing_qc = frappe.db.get_value("Quality Clearance", {"grn_name": self.grn_name, "docstatus": 1, "name": ("!=", self.name)}, "name")
+            if existing_qc:
+                frappe.throw(f"A submitted Quality Clearance: {existing_qc} for the GRN: {self.grn_name} already exists.") 
     
   
     def on_submit(self):

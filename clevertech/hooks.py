@@ -120,15 +120,13 @@ doc_events = {
         },
 }
 doctype_js = {
-        "Material Request":"public/js/material_request.js",
+        "Material Request": "public/js/material_request.js",
         "Request for Quotation":"public/js/request_for_quotation.js",
         "Supplier Quotation":"public/js/supplier_quotation.js",
         "Purchase Order":"public/js/purchase_order.js",
         "Purchase Receipt":"public/js/purchase_receipt.js",
         "Project":"public/js/project.js",
         "Item":"public/js/item_update.js",
-        "Material Request":"public/js/item_update_mr.js",
-        
 }
 fixtures = [
     {
