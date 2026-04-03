@@ -12,8 +12,8 @@
  "is_hidden": 0,
  "label": "Quality-CleverTech",
  "links": [],
- "modified": "2026-02-27 16:28:47.427808",
- "modified_by": "Administrator",
+ "modified": "2026-04-03 11:43:44.104363",
+ "modified_by": "rutuja@transcendent.co.in",
  "module": "Clevertech",
  "name": "Quality-CleverTech",
  "number_cards": [],
@@ -38,7 +38,8 @@
    "label": "QC Pending -GRN",
    "link_to": "QCPending-GRN",
    "report_ref_doctype": "Purchase Receipt",
-   "type": "Report"
+   "type": "Report",
+   "url": "/app/query-report/QCPending-GRN"
   },
   {
    "color": "Grey",

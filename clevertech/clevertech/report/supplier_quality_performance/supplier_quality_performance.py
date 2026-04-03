@@ -61,7 +61,7 @@ def execute(filters=None):
         )
 
         rejected_qty = pr_item.rejected_qty if pr_item else 0
-        accepted_qty =  pr_item.qty
+        accepted_qty = pr_item.qty if pr_item else 0
         qty = accepted_qty + rejected_qty
 
         # Step 4: Calculate Acceptance % and Rejection %
@@ -101,4 +101,3 @@ def execute(filters=None):
         })
 
     return columns, data
-
