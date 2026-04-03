@@ -180,10 +180,10 @@
   {
    "fieldname": "comparison_table",
    "fieldtype": "Table",
+   "hidden": 1,
    "label": "Comparison Table",
    "options": "Comparison Table Item",
-   "read_only": 1,
-   "hidden": 1
+   "read_only": 1
   },
   {
    "collapsible": 1,
@@ -227,8 +227,8 @@
  "index_web_pages_for_search": 1,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-03-30 16:59:23.634329",
- "modified_by": "rutuja@transcendent.co.in",
+ "modified": "2026-04-03 12:22:35.131495",
+ "modified_by": "Administrator",
  "module": "Clevertech",
  "name": "Supplier Quotation Comparison",
  "naming_rule": "Expression",
